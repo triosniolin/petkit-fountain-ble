@@ -1,0 +1,15 @@
+{
+  "domain": "petkit_fountain",
+  "name": "PetKit Fountain (BLE)",
+  "codeowners": ["@triosniolin"],
+  "config_flow": true,
+  "dependencies": ["bluetooth_adapters"],
+  "documentation": "https://github.com/triosniolin/petkit-fountain-ble",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/triosniolin/petkit-fountain-ble/issues",
+  "requirements": [],
+  "version": "0.1.0",
+  "bluetooth": [
+    {"local_name": "Petkit_W4X*"}
+  ]
+}

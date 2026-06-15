@@ -1,0 +1,74 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "bluetooth_confirm": {
+        "description": "Add the discovered PetKit fountain {name} ({address})?"
+      },
+      "user": {
+        "description": "Choose a discovered PetKit fountain to set up.",
+        "data": {
+          "address": "Device"
+        }
+      }
+    },
+    "abort": {
+      "no_devices_found": "No PetKit fountains found nearby. Ensure the fountain is powered and within Bluetooth range of Home Assistant.",
+      "already_configured": "This fountain is already configured."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "power_status": {"name": "Power"},
+      "warning_breakdown": {"name": "Hardware fault"},
+      "warning_water_missing": {"name": "Low water"},
+      "warning_filter": {"name": "Filter due"}
+    },
+    "button": {
+      "reset_filter": {"name": "Reset filter"}
+    },
+    "number": {
+      "smart_time_on": {"name": "Smart mode on"},
+      "smart_time_off": {"name": "Smart mode off"}
+    },
+    "select": {
+      "mode_select": {
+        "name": "Mode",
+        "state": {
+          "normal": "Normal",
+          "smart": "Smart"
+        }
+      },
+      "led_brightness": {
+        "name": "LED brightness",
+        "state": {
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High"
+        }
+      }
+    },
+    "sensor": {
+      "rssi": {"name": "Signal strength"},
+      "supply_voltage": {"name": "Supply voltage"},
+      "firmware": {"name": "Firmware"},
+      "serial": {"name": "Serial"},
+      "filter_percentage": {"name": "Filter life"},
+      "filter_days_left": {"name": "Filter days remaining"},
+      "pump_runtime": {"name": "Pump runtime"},
+      "purified_water": {"name": "Water purified"},
+      "mode": {
+        "name": "Mode",
+        "state": {
+          "normal": "Normal",
+          "smart": "Smart"
+        }
+      }
+    },
+    "switch": {
+      "power": {"name": "Power"},
+      "dnd": {"name": "Do not disturb"},
+      "led": {"name": "LED"}
+    }
+  }
+}
