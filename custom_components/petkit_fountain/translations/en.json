@@ -35,7 +35,8 @@
       "warning_water_missing": {"name": "Low water"},
       "warning_filter": {"name": "Filter due"},
       "low_battery": {"name": "Low battery"},
-      "detect_status": {"name": "Cat detected"}
+      "detect_status": {"name": "Cat detected"},
+      "suspend_status": {"name": "Suspended"}
     },
     "button": {
       "reset_filter": {"name": "Reset filter"}
@@ -67,6 +68,10 @@
       "battery_voltage": {"name": "Battery voltage"},
       "battery_percentage": {"name": "Battery"},
       "pump_runtime_today": {"name": "Pump runtime today"},
+      "electric_status": {"name": "Electric status"},
+      "module_status": {"name": "Module status"},
+      "battery_working_time": {"name": "Battery working time"},
+      "battery_sleep_time": {"name": "Battery sleep time"},
       "firmware": {"name": "Firmware"},
       "serial": {"name": "Serial"},
       "filter_percentage": {"name": "Filter life"},

@@ -23,6 +23,28 @@ CONNECTION_MODE_ON_DEMAND = "on_demand"
 DEFAULT_CONNECTION_MODE = CONNECTION_MODE_PERSISTENT
 DEFAULT_POLL_INTERVAL_MINUTES = 5
 
+# ─── Experimental flag — set True ONLY if you have a non-W4X PetKit ───
+#
+# Controls (CMD 220 "set mode/power" and CMD 222 "reset filter") work the
+# same on every model — they take fixed payloads with no alias-specific
+# byte positions — so power switch, mode select, and reset-filter button
+# register for every device by default.
+#
+# But CMD 221 "set config" (the multi-byte block that drives the DND
+# switch, LED switch, LED brightness, and smart-mode timings) sends
+# differently-shaped payloads for W4X vs CTW3. The W4X shape is verified.
+# The CTW3 shape is INFERRED from slespersen's read parser, never tested
+# against real hardware. Other aliases (W5/W5C/W5N/CTW2) share the W4X
+# payload shape per the same read research, but are also untested.
+#
+# Set this to True if you own a non-W4X fountain and want to test the
+# inferred write path. The DND/LED/brightness/smart-time entities will
+# register and attempt writes via the appropriate alias-shaped payload.
+# If a setting flips to a wrong value or stops responding, factory-reset
+# the fountain and open a GitHub issue — you're the first person past
+# this gate, and your report is how the table moves forward.
+ENABLE_EXPERIMENTAL_NON_W4X_WRITES = False
+
 # GATT characteristics (per slespersen/PetkitW5BLEMQTT constants.py)
 WRITE_UUID = "0000aaa2-0000-1000-8000-00805f9b34fb"
 READ_UUID = "0000aaa1-0000-1000-8000-00805f9b34fb"

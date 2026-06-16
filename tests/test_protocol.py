@@ -300,6 +300,68 @@ class TestCombinedStatus(unittest.TestCase):
         self.assertEqual(result["battery_working_time"], 60)
 
 
+class TestBuildConfigPayload(unittest.TestCase):
+    """The CMD 221 set-config payload builder. W4X-shape verified on
+    hardware; CTW3-shape is inferred from the read parser and tested here
+    only for round-trip shape (10 bytes in the right field order)."""
+
+    W4X_CONFIG = {
+        "smart_time_on": 30,
+        "smart_time_off": 5,
+        "led_switch": 1,
+        "led_brightness": 2,
+        "led_light_time_on": 1440,
+        "led_light_time_off": 360,
+        "do_not_disturb_switch": 0,
+        "do_not_disturb_time_on": 1320,
+        "do_not_disturb_time_off": 360,
+        "is_locked": 0,
+    }
+
+    CTW3_CONFIG = {
+        "smart_time_on": 30,
+        "smart_time_off": 5,
+        "battery_working_time": 60,
+        "battery_sleep_time": 15,
+        "led_switch": 1,
+        "led_brightness": 2,
+        "do_not_disturb_switch": 0,
+        "is_locked": 0,
+    }
+
+    def test_w4x_default(self):
+        """Default alias is W4X — 14 bytes in the original verified layout."""
+        payload = p.build_config_payload(self.W4X_CONFIG)
+        self.assertEqual(len(payload), 14)
+        self.assertEqual(payload[0], 30)  # smart_time_on
+        self.assertEqual(payload[2], 1)   # led_switch
+        self.assertEqual(payload[3], 2)   # led_brightness
+        self.assertEqual(payload[8], 0)   # do_not_disturb_switch
+
+    def test_ctw3_layout(self):
+        """CTW3 — 10 bytes, battery timings in slots 2-5, LED at 6-7,
+        DND switch at 8, is_locked at 9. Matches the read parser exactly."""
+        payload = p.build_config_payload(self.CTW3_CONFIG, alias="CTW3")
+        self.assertEqual(len(payload), 10)
+        self.assertEqual(payload[0], 30)         # smart_time_on
+        self.assertEqual(payload[1], 5)          # smart_time_off
+        self.assertEqual(payload[2:4], [0, 60])  # battery_working_time (short BE)
+        self.assertEqual(payload[4:6], [0, 15])  # battery_sleep_time (short BE)
+        self.assertEqual(payload[6], 1)          # led_switch
+        self.assertEqual(payload[7], 2)          # led_brightness
+        self.assertEqual(payload[8], 0)          # do_not_disturb_switch
+        self.assertEqual(payload[9], 0)          # is_locked
+
+    def test_round_trip_via_parser(self):
+        """A built CTW3 payload should round-trip back through the parser."""
+        payload = p.build_config_payload(self.CTW3_CONFIG, alias="CTW3")
+        parsed = p.parse_device_configuration(bytes(payload), alias="CTW3")
+        self.assertEqual(parsed["smart_time_on"], 30)
+        self.assertEqual(parsed["battery_working_time"], 60)
+        self.assertEqual(parsed["battery_sleep_time"], 15)
+        self.assertEqual(parsed["led_brightness"], 2)
+
+
 class TestWaterPurifiedMultipliers(unittest.TestCase):
     """Per-alias multipliers per slespersen calculate_water_purified."""
 

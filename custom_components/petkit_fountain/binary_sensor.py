@@ -75,6 +75,16 @@ CTW3_BINARY_SENSORS: tuple[PetkitBinarySensorDescription, ...] = (
             bool(d.detect_status) if d.detect_status is not None else None
         ),
     ),
+    PetkitBinarySensorDescription(
+        key="suspend_status",
+        translation_key="suspend_status",
+        # No device_class — slespersen describes this as "suspension
+        # status" without further detail. Exposed so CTW3 owners can
+        # observe when it asserts and we can figure out what it means.
+        value_fn=lambda d: (
+            bool(d.suspend_status) if d.suspend_status is not None else None
+        ),
+    ),
 )
 
 

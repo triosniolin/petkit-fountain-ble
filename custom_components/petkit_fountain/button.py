@@ -25,8 +25,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: PetkitFountainCoordinator = hass.data[DOMAIN][entry.entry_id]
-    if coordinator.alias != "W4X":
-        return  # write entities verified on W4X only — see switch.py for rationale
+    # CMD 222 takes no positional payload — alias-agnostic. Registered for
+    # every device family.
     async_add_entities([PetkitFountainResetFilterButton(coordinator)])
 
 

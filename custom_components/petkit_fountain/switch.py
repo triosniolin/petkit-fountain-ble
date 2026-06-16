@@ -15,7 +15,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, ENABLE_EXPERIMENTAL_NON_W4X_WRITES
 from .coordinator import PetkitFountainCoordinator, PetkitFountainData
 from .entity import PetkitFountainEntity
 
@@ -25,6 +25,11 @@ class PetkitSwitchDescription(SwitchEntityDescription):
     value_fn: Callable[[PetkitFountainData], bool | None]
     turn_on_fn: Callable[[PetkitFountainCoordinator], Awaitable[None]]
     turn_off_fn: Callable[[PetkitFountainCoordinator], Awaitable[None]]
+    # True if this entity sends CMD 221 (set_config) whose payload byte
+    # positions are only verified on W4X. False means the underlying
+    # command is alias-agnostic (CMD 220 power, CMD 222 reset filter, etc.)
+    # and is safe to register on all aliases.
+    requires_w4x: bool = True
 
 
 SWITCHES: tuple[PetkitSwitchDescription, ...] = (
@@ -35,6 +40,7 @@ SWITCHES: tuple[PetkitSwitchDescription, ...] = (
         value_fn=lambda d: bool(d.power_status) if d.power_status is not None else None,
         turn_on_fn=lambda c: c.async_set_power(True),
         turn_off_fn=lambda c: c.async_set_power(False),
+        requires_w4x=False,  # CMD 220 — alias-agnostic payload
     ),
     PetkitSwitchDescription(
         key="dnd",
@@ -66,14 +72,18 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: PetkitFountainCoordinator = hass.data[DOMAIN][entry.entry_id]
-    # Write entities only registered for the verified W4X parser branch.
-    # Non-W4X aliases share the read-path "else" branch per slespersen,
-    # but CMD 220/221 control-payload byte positions are unverified for
-    # those families — sending those commands could write the wrong fields.
-    if coordinator.alias != "W4X":
-        return
+    # Power switch (CMD 220) is alias-agnostic and registers everywhere.
+    # DND + LED switches use CMD 221 (set_config) whose payload is only
+    # verified on W4X; for other aliases we gate them behind the
+    # ENABLE_EXPERIMENTAL_NON_W4X_WRITES flag in const.py.
+    descriptions = [
+        d for d in SWITCHES
+        if not d.requires_w4x
+        or coordinator.alias == "W4X"
+        or ENABLE_EXPERIMENTAL_NON_W4X_WRITES
+    ]
     async_add_entities(
-        PetkitFountainSwitch(coordinator, description) for description in SWITCHES
+        PetkitFountainSwitch(coordinator, description) for description in descriptions
     )
 
 

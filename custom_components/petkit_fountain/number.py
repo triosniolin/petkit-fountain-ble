@@ -15,7 +15,7 @@ from homeassistant.const import EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, ENABLE_EXPERIMENTAL_NON_W4X_WRITES
 from .coordinator import PetkitFountainCoordinator, PetkitFountainData
 from .entity import PetkitFountainEntity
 
@@ -62,8 +62,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: PetkitFountainCoordinator = hass.data[DOMAIN][entry.entry_id]
-    if coordinator.alias != "W4X":
-        return  # write entities verified on W4X only — see switch.py for rationale
+    # All number entities currently use CMD 221 (set_config). Gate them
+    # to W4X unless the experimental flag is set — see switch.py for the
+    # rationale.
+    if coordinator.alias != "W4X" and not ENABLE_EXPERIMENTAL_NON_W4X_WRITES:
+        return
     async_add_entities(
         PetkitFountainNumber(coordinator, description) for description in NUMBERS
     )

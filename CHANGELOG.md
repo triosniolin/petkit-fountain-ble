@@ -2,7 +2,22 @@
 
 All notable changes to this project will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project loosely adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] — 2026-06-15
+## [0.3.0] — 2026-06-15
+
+Broadens control coverage for non-W4X models where it can be done safely, exposes more CTW3 telemetry, and adds a one-line escape hatch for users who want to test the unverified config-block writes.
+
+### Added
+
+- **Power switch + mode select + reset filter button now register for all aliases.** CMD 220 (power/mode) and CMD 222 (reset filter) take fixed payloads that don't vary by alias per slespersen's source — these can be exposed safely on every PetKit fountain family without inferring byte positions.
+- **CTW3 diagnostic sensors.** `electric_status`, `module_status`, `battery_working_time`, `battery_sleep_time` exposed as diagnostic-category entities so CTW3 owners can observe what values the device emits in different states. `suspend_status` exposed as a CTW3-only binary sensor. Slespersen documents the field positions; value semantics are inferred and the diagnostic category nudges users toward "watch these to figure out what they mean" rather than treating them as authoritative.
+- **CTW3 set-config payload builder** in `protocol.py`. Inferred 10-byte layout matching slespersen's read parser. Untested against real hardware. Gated behind the experimental flag.
+- **`ENABLE_EXPERIMENTAL_NON_W4X_WRITES` flag in `const.py`.** When `True`, the DND switch, LED switch, LED brightness select, and smart-mode timing entities register for non-W4X aliases and attempt writes via the appropriate alias-shaped payload (CTW3 → 10-byte, others → 14-byte). Default `False`. README describes the trade-off and asks adventurers to report findings via GitHub issues so untested rows can graduate.
+
+### Changed
+
+- **`build_config_payload` dispatches by alias** — W4X-family aliases route to the 14-byte layout, CTW3 to the 10-byte layout. `connection.set_config` passes `self.alias` through automatically; entity logic doesn't need to know which shape it's using.
+- **`_current_config()` field set is alias-aware.** W4X cares about LED + DND time-of-day shorts; CTW3 cares about battery_working_time + battery_sleep_time instead. The completeness check that prevents partial-write corruption now reads the correct field list per alias.
+- **CMD 222 (reset filter) payload aligned to slespersen's source** — now sends `[0]` instead of `[]`. W4X accepts both; the `[0]` form matches the upstream research and is the right shape for the untested aliases this release exposes the reset button to.
 
 Extends discovery + parsing support to the rest of the PetKit fountain family that the upstream slespersen/Jezza34000 research covers — Eversweet Mini (W5/W5C/W5N), Eversweet Solo 2 (CTW2), and Eversweet Max (CTW3) — all explicitly marked **untested**. The verified-on-hardware set is still Eversweet 3 Pro UVC only.
 
@@ -110,6 +125,7 @@ Other features:
 
 Tested on the Eversweet 3 Pro UVC (`Petkit_W4XUVC`). The non-UVC Eversweet 3 Pro (`Petkit_W4X`) uses the same parser branch and should work but is unverified. Other PetKit model families (W5 / CTW2 / CTW3) are recognized in the model map but not parsed — extend `protocol.py` to add support.
 
+[0.3.0]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.1...v0.1.2

@@ -139,11 +139,12 @@ def signal_update(entry_id: str) -> str:
     return f"{DOMAIN}_update_{entry_id}"
 
 
-# Fields that compose the CMD 221 set-config payload. All must be present
-# (non-None) before we're willing to write — otherwise unpatched fields
-# would silently collapse to 0 in the wire payload and overwrite real
-# device state.
-_CONFIG_BLOCK_FIELDS: tuple[str, ...] = (
+# Fields that compose the CMD 221 set-config payload — per alias, since
+# W4X and CTW3 carry different fields. All must be present (non-None)
+# before we're willing to write; otherwise unpatched fields would
+# silently collapse to 0 in the wire payload and overwrite real device
+# state.
+_CONFIG_BLOCK_FIELDS_W4X: tuple[str, ...] = (
     "smart_time_on",
     "smart_time_off",
     "led_switch",
@@ -155,6 +156,20 @@ _CONFIG_BLOCK_FIELDS: tuple[str, ...] = (
     "do_not_disturb_time_off",
     "is_locked",
 )
+_CONFIG_BLOCK_FIELDS_CTW3: tuple[str, ...] = (
+    "smart_time_on",
+    "smart_time_off",
+    "battery_working_time",
+    "battery_sleep_time",
+    "led_switch",
+    "led_brightness",
+    "do_not_disturb_switch",
+    "is_locked",
+)
+
+
+def _config_block_fields_for(alias: str) -> tuple[str, ...]:
+    return _CONFIG_BLOCK_FIELDS_CTW3 if alias == "CTW3" else _CONFIG_BLOCK_FIELDS_W4X
 
 
 class PetkitFountainCoordinator:
@@ -239,16 +254,18 @@ class PetkitFountainCoordinator:
 
         Returns None if any field is still None (i.e. no successful config
         read since startup). Callers must NOT synthesize zeros for missing
-        fields — the fountain only accepts the full 14-byte block per CMD
+        fields — the fountain only accepts the full config block per CMD
         221 write, so a partial snapshot with `or 0` fallbacks would clobber
         real device state with zeros on the unpatched fields (e.g. flipping
         the LED switch could simultaneously rewrite DND schedule times to
-        00:00 if those hadn't been read yet).
+        00:00 if those hadn't been read yet). Field set varies by alias —
+        W4X has 10 fields, CTW3 has 8 (different LED+DND vs battery slots).
         """
         d = self.data
-        if any(getattr(d, field) is None for field in _CONFIG_BLOCK_FIELDS):
+        fields = _config_block_fields_for(self.alias)
+        if any(getattr(d, field) is None for field in fields):
             return None
-        return {field: getattr(d, field) for field in _CONFIG_BLOCK_FIELDS}
+        return {field: getattr(d, field) for field in fields}
 
     async def _trigger_refresh(self) -> None:
         """Kick a fresh poll so entities reflect the new state quickly."""

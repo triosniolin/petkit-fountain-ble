@@ -6,19 +6,37 @@ A Home Assistant custom integration that controls a **PetKit Eversweet 3 Pro / 3
 
 | Model | BLE local_name | Parser branch | Status |
 |---|---|---|---|
-| Eversweet 3 Pro UVC | `Petkit_W4XUVC` | W4X | ✅ Verified — sensors + write controls |
+| Eversweet 3 Pro UVC | `Petkit_W4XUVC` | W4X | ✅ Verified — sensors + full write controls |
 | Eversweet 3 Pro | `Petkit_W4X` | W4X | 🟡 Shares verified branch; unverified end-to-end |
-| Eversweet Mini | `Petkit_W5`, `Petkit_W5C`, `Petkit_W5N` | W4X (read-only) | 🟠 **Untested** — discovery + read-path likely work, write entities disabled |
-| Eversweet Solo 2 | `Petkit_CTW2` | W4X (read-only) | 🟠 **Untested** — discovery + read-path likely work, write entities disabled |
-| Eversweet Max | `Petkit_CTW3` | CTW3 (read-only) | 🟠 **Untested** — distinct parser branch, write entities disabled |
+| Eversweet Mini | `Petkit_W5`, `Petkit_W5C`, `Petkit_W5N` | W4X | 🟠 **Untested** — read + power/mode/reset-filter controls registered; config-block writes behind a flag |
+| Eversweet Solo 2 | `Petkit_CTW2` | W4X | 🟠 **Untested** — read + power/mode/reset-filter controls registered; config-block writes behind a flag |
+| Eversweet Max | `Petkit_CTW3` | CTW3 | 🟠 **Untested** — distinct read parser, additional battery/diagnostic sensors; power/mode/reset-filter controls registered; config-block writes behind a flag |
 
 **Verified** means I personally own the unit, the integration has been running on it for a meaningful period, and write commands (mode change, DND toggle, etc.) actually do what they say. Other rows are based on protocol research from upstream slespersen/Jezza34000 work but have **never been run against real hardware** by this maintainer.
 
 If you own one of the untested models and want to help, install, file an issue with the model + a brief description of what works, and the verified/untested table moves forward.
 
-### Why write entities are disabled for non-W4X
+### Which write commands are registered for which models
 
-Read parsers for the other PetKit fountain families share the W4X byte layout (slespersen's "else" branch) or have an explicit CTW3 branch — those are mechanical to port and likely correct. **Write commands** (CMD 220 / CMD 221 / CMD 222), however, expect payloads with byte positions that have been verified on W4X but may differ on CTW3 or older W5 firmwares. Sending a wrong-position payload could change unintended settings or destabilize the device. To keep the experimental support safe, switches/selects/numbers/buttons are simply not registered for non-W4X devices.
+| Command | What it does | Payload | Registered for |
+|---|---|---|---|
+| CMD 220 | Power on/off + mode (normal/smart) | Fixed `[power, mode]` — same on every model per slespersen | All aliases |
+| CMD 222 | Reset filter wear counter | Empty payload | All aliases |
+| CMD 221 | Set the multi-field config block (DND, LED, smart timings, etc.) | Alias-shaped: 14 bytes for W4X, 10 bytes for CTW3 — different field positions | W4X only by default |
+
+The split is by *payload shape*. CMD 220 and CMD 222 take fixed payloads that slespersen doesn't alias-branch in source — so power switch, mode select, and reset filter button can register safely for every model. CMD 221's payload positions are W4X-verified; the CTW3 shape is inferred from the read parser but never tested against real hardware, and the other aliases (W5/W5C/W5N/CTW2) share the W4X read shape and are presumed to share its write shape — also untested.
+
+### Enabling experimental config-block writes on non-W4X models
+
+If you own a non-W4X fountain and want to try the DND switch, LED switch, LED brightness select, or smart-mode timing entities, edit `custom_components/petkit_fountain/const.py`:
+
+```python
+ENABLE_EXPERIMENTAL_NON_W4X_WRITES = True  # was False
+```
+
+Restart Home Assistant. Those entities will register and attempt writes via the alias-appropriate payload shape (CTW3 gets the 10-byte block, W5/W5C/W5N/CTW2 get the W4X 14-byte block).
+
+**You are a guinea pig.** If a setting changes in a wrong direction or stops responding, factory-reset the fountain and open a GitHub issue describing what you observed — that's the only path to verifying these byte positions, and your report graduates a row in the table above.
 
 ## Features
 

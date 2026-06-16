@@ -177,6 +177,40 @@ CTW3_SENSORS: tuple[PetkitSensorDescription, ...] = (
             else None
         ),
     ),
+    # Diagnostic bytes from the CTW3 state/config frames. Slespersen
+    # documents the field positions but doesn't fully document the value
+    # semantics — exposing them as raw integers so CTW3 owners can
+    # observe what values their device emits in different states and
+    # report back. Once we know what the numbers mean, these can graduate
+    # to enum-style sensors with proper labels.
+    PetkitSensorDescription(
+        key="electric_status",
+        translation_key="electric_status",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.electric_status,
+    ),
+    PetkitSensorDescription(
+        key="module_status",
+        translation_key="module_status",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.module_status,
+    ),
+    PetkitSensorDescription(
+        key="battery_working_time",
+        translation_key="battery_working_time",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.battery_working_time,
+    ),
+    PetkitSensorDescription(
+        key="battery_sleep_time",
+        translation_key="battery_sleep_time",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.battery_sleep_time,
+    ),
 )
 
 

@@ -287,20 +287,26 @@ class PetkitFountainConnection:
             await asyncio.sleep(_INTER_CMD_DELAY)
 
     async def set_config(self, config: dict[str, int]) -> None:
-        """CMD 221 — write the full 14-byte config block. Caller is
-        responsible for passing the current config + their patches; this
-        method does not read state first."""
+        """CMD 221 — write the full config block. Dispatches to the W4X
+        (14-byte) or CTW3 (10-byte) payload shape based on `self.alias`.
+        Caller is responsible for passing the current config + their
+        patches; this method does not read state first."""
         async with self._lock:
             await self._ensure_connected()
-            payload = build_config_payload(config)
+            payload = build_config_payload(config, alias=self.alias)
             await self._send(CMD_SET_CONFIG, payload)
             await asyncio.sleep(_INTER_CMD_DELAY)
 
     async def reset_filter(self) -> None:
-        """CMD 222 — reset the filter wear counter to 100%."""
+        """CMD 222 — reset the filter wear counter to 100%. Payload `[0]`
+        per slespersen's set_reset_filter (the W4X device also accepts
+        `[]`, which is what earlier versions sent — but the [0] form
+        matches the original research and is the right shape to send on
+        untested models per the "per slespersen" safety claim in the
+        README's write-command table)."""
         async with self._lock:
             await self._ensure_connected()
-            await self._send(CMD_RESET_FILTER, [])
+            await self._send(CMD_RESET_FILTER, [0])
             await asyncio.sleep(_INTER_CMD_DELAY)
 
     # ─────────────────────────────── polling ────────────────────────────────

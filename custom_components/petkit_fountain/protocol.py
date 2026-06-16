@@ -413,18 +413,30 @@ def _split_short(val: int) -> tuple[int, int]:
     return (val >> 8) & 0xFF, val & 0xFF
 
 
-def build_config_payload(config: dict[str, int]) -> list[int]:
-    """Pack a 14-byte CMD 221 payload from the current+patched config.
+def build_config_payload(config: dict[str, int], alias: str = "W4X") -> list[int]:
+    """Pack the CMD 221 payload from the current+patched config.
 
-    The fountain accepts the entire config block per write; partial updates
-    aren't possible. Callers should read the current values from the
-    coordinator and patch the fields they want to change.
+    Dispatches by alias because W4X-family and CTW3 use different config
+    block layouts. The fountain accepts the entire block per write —
+    partial updates aren't possible — so callers must read the current
+    values from the coordinator and patch the fields they want to change.
 
-    Required keys (matches parse_device_configuration outputs):
-      smart_time_on, smart_time_off, led_switch, led_brightness,
-      led_light_time_on, led_light_time_off, do_not_disturb_switch,
-      do_not_disturb_time_on, do_not_disturb_time_off, is_locked
+    W4X (verified): 14 bytes — smart_time on/off, led switch, led
+    brightness, led_light_time on/off (2 shorts), dnd switch, dnd_time
+    on/off (2 shorts), is_locked.
+
+    CTW3 (unverified — inferred from read parser): 10 bytes — smart_time
+    on/off, battery_working_time, battery_sleep_time (2 shorts), led
+    switch, led brightness, dnd switch, is_locked. No LED time-of-day or
+    DND time-of-day fields; battery scheduling fields replace them.
     """
+    if alias == "CTW3":
+        return _build_config_payload_ctw3(config)
+    return _build_config_payload_w4x(config)
+
+
+def _build_config_payload_w4x(config: dict[str, int]) -> list[int]:
+    """14-byte W4X-family layout. Used for W4X, W5/W5C/W5N, CTW2."""
     led_on_hi, led_on_lo = _split_short(config.get("led_light_time_on") or 0)
     led_off_hi, led_off_lo = _split_short(config.get("led_light_time_off") or 0)
     dnd_on_hi, dnd_on_lo = _split_short(config.get("do_not_disturb_time_on") or 0)
@@ -439,6 +451,26 @@ def build_config_payload(config: dict[str, int]) -> list[int]:
         config.get("do_not_disturb_switch", 0) & 0xFF,
         dnd_on_hi, dnd_on_lo,
         dnd_off_hi, dnd_off_lo,
+        config.get("is_locked", 0) & 0xFF,
+    ]
+
+
+def _build_config_payload_ctw3(config: dict[str, int]) -> list[int]:
+    """10-byte CTW3 layout — inferred from slespersen's read parser,
+    UNTESTED on real hardware. Field order matches the read parser's
+    byte positions exactly; if the write shape differs, this is the
+    function that needs patching.
+    """
+    bat_work_hi, bat_work_lo = _split_short(config.get("battery_working_time") or 0)
+    bat_sleep_hi, bat_sleep_lo = _split_short(config.get("battery_sleep_time") or 0)
+    return [
+        config.get("smart_time_on", 0) & 0xFF,
+        config.get("smart_time_off", 0) & 0xFF,
+        bat_work_hi, bat_work_lo,
+        bat_sleep_hi, bat_sleep_lo,
+        config.get("led_switch", 0) & 0xFF,
+        config.get("led_brightness", 0) & 0xFF,
+        config.get("do_not_disturb_switch", 0) & 0xFF,
         config.get("is_locked", 0) & 0xFF,
     ]
 
