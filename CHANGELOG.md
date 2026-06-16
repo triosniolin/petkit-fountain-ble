@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project loosely adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-06-15
+
+Reworks device pairing to an **init-once / stored-secret** model, adds a **re-pair recovery path** for devices that are already bound, and corrects the CTW3 write paths. The pairing rework and the re-pair flow are adapted from the [aavdberg/ha-petkit](https://github.com/aavdberg/ha-petkit) project (the re-pair UX from its PR #76); the CTW3 fixes come from cross-checking our protocol against that project's real-hardware captures. Our verified W4X path was confirmed byte-for-byte identical to theirs.
+
+### Added
+
+- **Stored device secret (`CONF_DEVICE_SECRET`).** The 8-byte secret is persisted (hex) in the config entry. At runtime the integration authenticates with it (`CMD 86`) instead of re-deriving and re-pairing on every connect. It's redacted from the diagnostics export.
+- **Random secret for fresh devices.** A newly-paired fountain is initialized with a `secrets.token_bytes(8)` random secret rather than the `device_id`-derived value, so the secret can't be recomputed by anyone able to read the `device_id` over BLE.
+- **"Device Already Paired" re-pair menu.** When a device reports as already bound (PetKit app, or a previous HA install whose secret was lost), setup now offers *Re-pair now* (overwrite with a fresh secret) or *Cancel* (leave untouched) instead of either silently overwriting or dead-ending. Re-pair / connect failures abort with actionable messages (`cannot_connect`, `init_failed`, `repair_failed`, `repair_cancelled`).
+- **`connection.async_check_initialized()`** — reads the `device_id` to decide whether to provision directly (fresh) or offer the re-pair menu (bound). Heuristic (`device_id != 0`) matches aavdberg's, validated there on CTW3/W5.
+
+### Changed
+
+- **Runtime is auth-only; `CMD 73` (pairing) runs at most once.** Connection lifecycle split into `_open()` (connect, no auth), `_authenticate()` (CMD 213 → 86 → 84), and `async_init_device()` (one-time CMD 73). Reconnects re-authenticate; they no longer re-pair.
+- **CTW3 `CMD 220` is now a 3-byte `[power, suspend, mode]` payload** (was the W4X 2-byte form for all aliases). The `suspend` byte must be 1 for the pump to run in normal mode; `set_mode` dispatches by alias.
+- **Debug logs no longer leak identifiers or secrets.** The `CMD 213` identifier response is no longer logged as hex, and `CMD 73` / `CMD 86` frames (which embed the secret) are redacted in the write log.
+
+### Fixed
+
+- **CTW3 `CMD 221` config byte order was off-by-one.** Corrected to dnd=idx 6, led_switch=idx 7, led_brightness=idx 8 (matching aavdberg's hardware-verified layout, their #70) in both the parser and the payload builder. The earlier inferred W4X-style order would have mis-set LED/DND on a real Eversweet Max. (Still gated behind the experimental flag; untested here.)
+- **CTW3 mode no longer flips to "unknown" mid-cycle.** The state parser latches `mode` — a transient `mode=0` (reported during the smart-mode sleep phase) is dropped rather than overwriting the cached value.
+- **CTW3 `detect_status` normalized to 0/1** — firmware 111 reports `2` for pet presence; any non-zero is now treated as detected.
+
+### Migration
+
+- **Entries created before this release migrate in place, with no re-pairing.** On first connect an entry with no stored secret derives the legacy `device_id`-based secret (the value the old every-connect `CMD 73` installed), sends `CMD 73` once (idempotent on an already-paired device), and persists it. Subsequent connects are auth-only. Persisting the secret triggers one entry reload on that first startup; later startups are clean.
+
+### Notes
+
+- **Device-id byte-order safety.** aavdberg's PR #76 also fixed a little-endian/big-endian mismatch between their init-check and init-write. This integration was never affected — the raw `device_id_bytes` from `CMD 213` go straight into the `CMD 73` payload via `pad_array`, never round-tripping through an int — but a regression test now pins that invariant.
+- **Config-flow pairing is untested against real W4X hardware** from the config-flow context. The check/provision/re-pair steps are modeled on aavdberg's CTW3/W5-validated flow.
+- **Test suite expanded to 41 tests** — CTW3 mode payload, mode-latch, detect normalization, device-id round-trip, and the corrected CTW3 config byte order.
+
 ## [0.3.0] — 2026-06-15
 
 Broadens control coverage for non-W4X models where it can be done safely, exposes more CTW3 telemetry, and adds a one-line escape hatch for users who want to test the unverified config-block writes.
@@ -125,6 +158,7 @@ Other features:
 
 Tested on the Eversweet 3 Pro UVC (`Petkit_W4XUVC`). The non-UVC Eversweet 3 Pro (`Petkit_W4X`) uses the same parser branch and should work but is unverified. Other PetKit model families (W5 / CTW2 / CTW3) are recognized in the model map but not parsed — extend `protocol.py` to add support.
 
+[0.4.0]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.2...v0.1.3

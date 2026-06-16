@@ -5,3 +5,9 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+
+# Local-only release procedure. Useful to the maintainer (and any agent
+# working in this tree) but not something we want shipped with the
+# integration — release mechanics are a maintainer concern, not a user
+# concern, and the file references private workstation paths.
+RELEASING.md

@@ -30,6 +30,7 @@ from homeassistant.util import dt as dt_util
 
 from .connection import PetkitFountainConnection
 from .const import (
+    CONF_DEVICE_SECRET,
     CONNECTION_MODE_ON_DEMAND,
     CONNECTION_MODE_PERSISTENT,
     DEFAULT_CONNECTION_MODE,
@@ -182,6 +183,7 @@ class PetkitFountainCoordinator:
         ble_device: BLEDevice,
         name: str,
         type_code: int | None,
+        secret: bytes | None = None,
         connection_mode: str = DEFAULT_CONNECTION_MODE,
         poll_interval_minutes: int = DEFAULT_POLL_INTERVAL_MINUTES,
     ) -> None:
@@ -212,6 +214,7 @@ class PetkitFountainCoordinator:
             ble_device,
             self.name,
             alias=self.alias,
+            secret=secret,
             on_unsolicited_status=self._on_push_update,
         )
         self._unsub_adv: CALLBACK_TYPE | None = None
@@ -318,6 +321,26 @@ class PetkitFountainCoordinator:
         await self._connection.reset_filter()
         await self._trigger_refresh()
 
+    # ─────────────────────────── secret migration ────────────────────────────
+
+    def _maybe_persist_secret(self) -> None:
+        """One-time migration: if the entry has no stored secret and the
+        connection derived the legacy one on first connect, persist it so
+        future sessions authenticate with the stored value and never re-pair
+        (CMD 73). No-op once a secret is stored."""
+        if self.entry.data.get(CONF_DEVICE_SECRET):
+            return
+        if not self._connection.secret_was_derived:
+            return
+        secret = self._connection.secret_bytes
+        if secret is None:
+            return
+        self.hass.config_entries.async_update_entry(
+            self.entry,
+            data={**self.entry.data, CONF_DEVICE_SECRET: secret.hex()},
+        )
+        _LOGGER.info("Persisted device secret into config entry (one-time migration)")
+
     # ─────────────────────────── active poll path ────────────────────────────
 
     async def _async_poll(self, _now=None) -> None:
@@ -332,6 +355,7 @@ class PetkitFountainCoordinator:
             result = await self._connection.poll()
             self.data.update_from_poll(result)
             self.data.last_seen = dt_util.utcnow()
+            self._maybe_persist_secret()
             async_dispatcher_send(self.hass, signal_update(self.entry.entry_id))
             if self.connection_mode == CONNECTION_MODE_ON_DEMAND:
                 # Free the BLE slot between polls. Push frames are

@@ -194,6 +194,32 @@ class TestComputeSecret(unittest.TestCase):
         self.assertEqual(result, [0, 0, 0, 0, 0x34, 0x12, 13, 37])
 
 
+class TestDeviceIdRoundTrip(unittest.TestCase):
+    """Guards the invariant aavdberg PR #76 fixed in their code: the device_id
+    sent back in the CMD 73 init payload must equal the bytes CMD 213 returned
+    (no byte-swap). Our parser keeps the raw device_id_bytes and the CMD 73
+    payload is pad_array(device_id_bytes, 8), so they round-trip verbatim —
+    we never had the bug, but this pins it so a refactor can't reintroduce it."""
+
+    def test_device_id_bytes_roundtrip(self):
+        raw_id = bytes([0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC])
+        # CMD 213 data = 2-byte prefix + 6 id bytes + serial tail.
+        data = b"\xaa\xbb" + raw_id + b"SN-1"
+        ids = p.parse_device_identifiers(data)
+        self.assertEqual(bytes(ids["device_id_bytes"]), raw_id)
+        # CMD 73 payload left-pads to 8, preserving order.
+        self.assertEqual(bytes(p.pad_array(ids["device_id_bytes"], 8)), b"\x00\x00" + raw_id)
+        # device_id int is big-endian over the same bytes.
+        self.assertEqual(ids["device_id"], int.from_bytes(raw_id, "big"))
+
+    def test_zero_id_when_unpaired(self):
+        """All-zero id bytes (uninitialized device) → device_id 0, so
+        async_check_initialized reports 'not paired'."""
+        data = b"\xaa\xbb" + bytes(6) + b"SN-1"
+        ids = p.parse_device_identifiers(data)
+        self.assertEqual(ids["device_id"], 0)
+
+
 class TestParseDeviceState(unittest.TestCase):
     def test_w4x_minimum_frame(self):
         """A 12-byte W4X state frame: power=on, mode=smart, pump 500s, filter 87%."""
@@ -246,15 +272,18 @@ class TestParseDeviceState(unittest.TestCase):
 
 class TestParseDeviceConfiguration(unittest.TestCase):
     def test_ctw3_10byte_frame(self):
-        """CTW3 config swaps the LED+DND schedule slots for battery timings."""
+        """CTW3 config swaps the LED+DND schedule slots for battery timings.
+
+        Byte order (idx 6=dnd, 7=led_switch, 8=led_brightness) per aavdberg's
+        hardware-verified correction (#70)."""
         data = bytes([
             30,           # smart_time_on
             10,           # smart_time_off
             0x00, 0x3c,   # battery_working_time = 60 min
             0x00, 0x05,   # battery_sleep_time = 5 min
+            0,            # dnd_switch
             1,            # led_switch
             2,            # led_brightness = medium
-            0,            # dnd_switch
             0,            # is_locked
         ])
         result = p.parse_device_configuration(data, alias="CTW3")
@@ -339,17 +368,18 @@ class TestBuildConfigPayload(unittest.TestCase):
         self.assertEqual(payload[8], 0)   # do_not_disturb_switch
 
     def test_ctw3_layout(self):
-        """CTW3 — 10 bytes, battery timings in slots 2-5, LED at 6-7,
-        DND switch at 8, is_locked at 9. Matches the read parser exactly."""
+        """CTW3 — 10 bytes, battery timings in slots 2-5, then DND switch at
+        6, LED switch at 7, LED brightness at 8, is_locked at 9 (aavdberg #70).
+        Matches the read parser exactly."""
         payload = p.build_config_payload(self.CTW3_CONFIG, alias="CTW3")
         self.assertEqual(len(payload), 10)
         self.assertEqual(payload[0], 30)         # smart_time_on
         self.assertEqual(payload[1], 5)          # smart_time_off
         self.assertEqual(payload[2:4], [0, 60])  # battery_working_time (short BE)
         self.assertEqual(payload[4:6], [0, 15])  # battery_sleep_time (short BE)
-        self.assertEqual(payload[6], 1)          # led_switch
-        self.assertEqual(payload[7], 2)          # led_brightness
-        self.assertEqual(payload[8], 0)          # do_not_disturb_switch
+        self.assertEqual(payload[6], 0)          # do_not_disturb_switch
+        self.assertEqual(payload[7], 1)          # led_switch
+        self.assertEqual(payload[8], 2)          # led_brightness
         self.assertEqual(payload[9], 0)          # is_locked
 
     def test_round_trip_via_parser(self):
@@ -404,6 +434,46 @@ class TestCalculateFilterDaysLeft(unittest.TestCase):
             p.calculate_filter_days_left(100, mode=1, smart_time_on=99, smart_time_off=99),
             30,
         )
+
+
+class TestCtw3ModePayload(unittest.TestCase):
+    """CTW3 CMD 220 is 3 bytes [power, suspend, mode] — suspend must be 1 for
+    the pump to run in normal mode (aavdberg #57)."""
+
+    def test_normal_mode_sets_suspend(self):
+        self.assertEqual(p.build_ctw3_mode_payload(1, 1), [1, 1, 1])
+
+    def test_smart_mode_clears_suspend(self):
+        self.assertEqual(p.build_ctw3_mode_payload(1, 2), [1, 0, 2])
+
+    def test_power_off_forces_suspend_zero(self):
+        self.assertEqual(p.build_ctw3_mode_payload(0, 1), [0, 0, 1])
+
+
+class TestCtw3StateRefinements(unittest.TestCase):
+    """Hardware-derived CTW3 state refinements from aavdberg."""
+
+    def _frame(self, mode_byte: int, detect_byte: int) -> bytes:
+        data = bytearray(26)
+        data[0] = 1            # power_status
+        data[2] = mode_byte
+        data[19] = detect_byte
+        return bytes(data)
+
+    def test_mode_latched_when_transient_zero(self):
+        """A transient mode=0 (smart-sleep phase) is omitted so callers keep
+        the cached value instead of flipping to 'unknown' (#57)."""
+        result = p.parse_device_state(self._frame(0, 0), alias="CTW3")
+        self.assertNotIn("mode", result)
+
+    def test_mode_present_when_known(self):
+        result = p.parse_device_state(self._frame(2, 0), alias="CTW3")
+        self.assertEqual(result["mode"], 2)
+
+    def test_detect_status_normalized(self):
+        """Firmware 111 reports 2 for pet presence; normalize to 1 (#65)."""
+        result = p.parse_device_state(self._frame(1, 2), alias="CTW3")
+        self.assertEqual(result["detect_status"], 1)
 
 
 if __name__ == "__main__":

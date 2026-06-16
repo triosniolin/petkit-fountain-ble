@@ -33,6 +33,7 @@ from .protocol import (
     TYPE_SEND,
     build_command,
     build_config_payload,
+    build_ctw3_mode_payload,
     compute_secret,
     pad_array,
     parse_device_configuration,
@@ -67,6 +68,7 @@ class PetkitFountainConnection:
         ble_device: BLEDevice,
         name: str,
         alias: str = "W4X",
+        secret: bytes | None = None,
         on_unsolicited_status: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.ble_device = ble_device
@@ -97,11 +99,18 @@ class PetkitFountainConnection:
         # flush window = same frame; different bytes = different frame.
         self._last_raw: dict[int, bytes] = {}
 
-        # Populated by the init sequence:
+        # Device identifiers, populated by _authenticate() on first connect.
         self.device_id_bytes: list[int] | None = None
         self.device_id: int | None = None
         self.serial: str | None = None
-        self._secret: list[int] | None = None
+        # The 8-byte secret. Supplied by the caller (read from the config
+        # entry). When None — a legacy entry created before secrets were
+        # persisted — _authenticate() derives the legacy device_id-based value,
+        # runs CMD 73 once to (re)pair with it, and sets secret_was_derived so
+        # the coordinator persists it. After that, the stored secret is used
+        # and CMD 73 never runs again for this entry.
+        self._secret: list[int] | None = list(secret) if secret is not None else None
+        self.secret_was_derived: bool = False
 
     # ────────────────────────── connection lifecycle ─────────────────────────
 
@@ -109,10 +118,14 @@ class PetkitFountainConnection:
     def is_connected(self) -> bool:
         return self._client is not None and self._client.is_connected
 
-    async def _ensure_connected(self) -> None:
-        """Open the connection if needed; run init sequence on first connect."""
-        if self.is_connected:
-            return
+    @property
+    def secret_bytes(self) -> bytes | None:
+        """The active 8-byte secret, for the coordinator to persist into the
+        config entry. None until the first authenticate/init populates it."""
+        return bytes(self._secret) if self._secret is not None else None
+
+    async def _open(self) -> None:
+        """Open the GATT connection + subscribe to notifications. No auth."""
         _LOGGER.debug("Establishing BLE connection to %s", self.ble_device.address)
         self._client = await establish_connection(
             BleakClient,
@@ -134,13 +147,24 @@ class PetkitFountainConnection:
 
         await self._client.start_notify(READ_UUID, self._on_notify)
         _LOGGER.debug("Subscribed to notifications on %s", READ_UUID)
-        # Give the GATT stack a beat to settle before flooding commands.
+        # Give the GATT stack a beat to settle before sending commands.
         await asyncio.sleep(0.5)
-        # Init sequence runs once per connection. On reconnect (bleak drops the
-        # GATT session), we run it again — the device is stateless about
-        # in-memory sequence counters but persists the secret across reboots.
-        await self._run_init_sequence()
-        self._initialized = True
+
+    async def _ensure_connected(self) -> None:
+        """Open the connection if needed, then authenticate once per session.
+
+        Authentication (CMD 213 → 86 → 84) runs once per GATT session; on
+        reconnect _on_disconnect clears _initialized so we re-auth. The
+        destructive pairing command (CMD 73) is NOT on this path — it runs at
+        most once, either via the legacy-migration branch in _authenticate or
+        explicitly at setup via async_init_device.
+        """
+        if self.is_connected:
+            return
+        await self._open()
+        if not self._initialized:
+            await self._authenticate()
+            self._initialized = True
 
     def _on_disconnect(self, _client: BleakClient) -> None:
         """Bleak callback fired when the connection drops. Resolve any waiters
@@ -208,7 +232,12 @@ class PetkitFountainConnection:
         self._sequence = (self._sequence + 1) % 256
         frame = build_command(seq, cmd, TYPE_SEND, data)
         assert self._client is not None
-        _LOGGER.debug("BLE write cmd=%d seq=%d frame=%s", cmd, seq, frame.hex())
+        # CMD 73 (init) and CMD 86 (sync) embed the secret; don't log the raw
+        # frame for those so it can't leak into a pasted debug log.
+        if cmd in (CMD_INIT_DEVICE, CMD_DEVICE_SYNC):
+            _LOGGER.debug("BLE write cmd=%d seq=%d (payload redacted: secret)", cmd, seq)
+        else:
+            _LOGGER.debug("BLE write cmd=%d seq=%d frame=%s", cmd, seq, frame.hex())
         await self._client.write_gatt_char(WRITE_UUID, frame, response=False)
 
     async def _send_and_wait(
@@ -229,25 +258,13 @@ class PetkitFountainConnection:
 
     # ─────────────────────────── init / polling ─────────────────────────────
 
-    async def _run_init_sequence(self) -> None:
-        """Pair / re-handshake. CMD 73 sets a secret derived from the device's
-        own ID — it's idempotent on re-runs but the *first* time it runs it
-        invalidates whatever secret the official PetKit app set.
-
-        Order matches slespersen's init_device_connection() but with explicit
-        response awaits where possible (replacing some fixed sleeps).
-        """
-        _LOGGER.debug("Running init sequence on %s", self.ble_device.address)
-
-        # 1. Get device identifiers (device_id_bytes + serial).
+    async def _read_identifiers(self) -> None:
+        """CMD 213 — read device_id_bytes + serial into self. Raises on empty."""
         details = await self._send_and_wait(CMD_DEVICE_DETAILS, [0, 0])
-        _LOGGER.debug(
-            "Device identifiers raw response (len=%d): %s",
-            len(details),
-            details.hex(),
-        )
+        # NOTE: the raw response carries device_id + serial — do NOT log its
+        # hex, so identifiers can't leak into a pasted debug log.
+        _LOGGER.debug("Device identifiers response received (len=%d)", len(details))
         ids = parse_device_identifiers(details)
-        _LOGGER.debug("Parsed ids: %s", ids)
         if not ids:
             raise RuntimeError(
                 f"Empty device_identifiers response (data was {len(details)} bytes)"
@@ -255,21 +272,92 @@ class PetkitFountainConnection:
         self.device_id_bytes = ids["device_id_bytes"]
         self.device_id = ids["device_id"]
         self.serial = ids["serial"]
-        self._secret = compute_secret(self.device_id_bytes)
+
+    async def _authenticate(self) -> None:
+        """Authenticate to an already-paired device, once per GATT session:
+        read identifiers (CMD 213), verify with the stored secret (CMD 86),
+        sync the clock (CMD 84).
+
+        Migration: entries created before the secret was persisted have
+        self._secret is None. We then derive the legacy device_id-based secret
+        (the value the old every-connect CMD 73 installed) and run CMD 73 ONCE
+        to (re)pair with it — idempotent on an already-paired device. The
+        coordinator persists the derived secret after the first successful
+        poll, so this branch — and CMD 73 — never run again for this entry.
+        """
+        _LOGGER.debug("Authenticating to %s", self.ble_device.address)
+
+        await self._read_identifiers()
+        assert self.device_id_bytes is not None
+
+        if self._secret is None:
+            self._secret = compute_secret(self.device_id_bytes)
+            self.secret_was_derived = True
+            device_id_padded = pad_array(self.device_id_bytes, 8)
+            await asyncio.sleep(_INTER_CMD_DELAY)
+            # CMD 73 — one-time (re)pairing with the derived secret.
+            await self._send(
+                CMD_INIT_DEVICE, [0, 0] + device_id_padded + self._secret
+            )
+            await asyncio.sleep(1.0)
+            _LOGGER.info(
+                "Migrated %s to stored-secret model (one-time pairing sent)",
+                self.ble_device.address,
+            )
         await asyncio.sleep(_INTER_CMD_DELAY)
 
-        # 2. CMD 73 — set device secret. Fire-and-forget (no useful response).
-        device_id_padded = pad_array(self.device_id_bytes, 8)
-        await self._send(CMD_INIT_DEVICE, [0, 0] + device_id_padded + self._secret)
-        await asyncio.sleep(1.0)
-
-        # 3. CMD 86 — sync. Fire-and-forget.
+        # CMD 86 — sync/verify with the secret. Fire-and-forget (no useful
+        # response observed on this firmware).
         await self._send(CMD_DEVICE_SYNC, [0, 0] + self._secret)
         await asyncio.sleep(_INTER_CMD_DELAY)
 
-        # 4. CMD 84 — set datetime.
+        # CMD 84 — set datetime.
         await self._send(CMD_SET_DATETIME, time_in_bytes())
         await asyncio.sleep(_INTER_CMD_DELAY)
+
+    async def async_check_initialized(self) -> bool:
+        """Connect, read the device id, and report whether the device is
+        already paired (has a secret registered — by the PetKit app or a prior
+        install). A non-zero device_id means paired. Disconnects before
+        returning. Used by the config flow to decide whether to offer the
+        re-pair recovery menu vs. provision a fresh secret directly.
+
+        Heuristic note: mirrors aavdberg's `device_id != 0` check, validated on
+        CTW3/W5. If a fresh W4X ever reports non-zero while unpaired, the only
+        effect is that the user sees the re-pair menu and confirms — the
+        outcome is still correct.
+        """
+        try:
+            if not self.is_connected:
+                await self._open()
+            await self._read_identifiers()
+            return bool(self.device_id)
+        finally:
+            await self.disconnect()
+
+    async def async_init_device(self) -> None:
+        """One-time pairing for an UNINITIALIZED device, with the secret the
+        caller already set (a fresh random secret). Sends CMD 73, which
+        installs that secret device-side and INVALIDATES any official-app
+        pairing. Called once from the config flow; never at runtime.
+        """
+        assert self._secret is not None, "async_init_device requires a secret"
+        async with self._lock:
+            if not self.is_connected:
+                await self._open()
+            await self._read_identifiers()
+            assert self.device_id_bytes is not None
+            device_id_padded = pad_array(self.device_id_bytes, 8)
+            await asyncio.sleep(_INTER_CMD_DELAY)
+            # CMD 73 — set device secret (destructive: breaks app pairing).
+            await self._send(
+                CMD_INIT_DEVICE, [0, 0] + device_id_padded + self._secret
+            )
+            await asyncio.sleep(1.0)
+            # CMD 86 — verify/sync with the freshly-set secret.
+            await self._send(CMD_DEVICE_SYNC, [0, 0] + self._secret)
+            await asyncio.sleep(_INTER_CMD_DELAY)
+            self._initialized = True
 
     # ──────────────────────────── controls ──────────────────────────────────
     #
@@ -280,10 +368,21 @@ class PetkitFountainConnection:
     # second or two.
 
     async def set_mode(self, power_on: int, mode: int) -> None:
-        """CMD 220 — set power (0/1) + mode (1=normal, 2=smart)."""
+        """CMD 220 — set power (0/1) + mode (1=normal, 2=smart).
+
+        W4X/W5/CTW2 take a 2-byte [power, mode] payload. CTW3 takes a 3-byte
+        [power, suspend, mode] payload — the suspend byte must be 1 for the
+        pump to actually run in normal mode (aavdberg issue #57), so we
+        dispatch by alias here rather than treating CMD 220 as fully
+        alias-agnostic.
+        """
         async with self._lock:
             await self._ensure_connected()
-            await self._send(CMD_SET_MODE, [power_on & 1, mode & 0xFF])
+            if self.alias == "CTW3":
+                payload = build_ctw3_mode_payload(power_on & 1, mode & 0xFF)
+            else:
+                payload = [power_on & 1, mode & 0xFF]
+            await self._send(CMD_SET_MODE, payload)
             await asyncio.sleep(_INTER_CMD_DELAY)
 
     async def set_config(self, config: dict[str, int]) -> None:

@@ -11,6 +11,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
     CONF_CONNECTION_MODE,
+    CONF_DEVICE_SECRET,
     CONF_POLL_INTERVAL_MINUTES,
     CONF_TYPE_CODE,
     DEFAULT_CONNECTION_MODE,
@@ -79,12 +80,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     poll_interval = entry.options.get(
         CONF_POLL_INTERVAL_MINUTES, DEFAULT_POLL_INTERVAL_MINUTES
     )
+    # Stored device secret (hex). Absent on entries created before the
+    # stored-secret model — those self-migrate on first connect by deriving
+    # the legacy value and persisting it (see coordinator._maybe_persist_secret).
+    secret_hex = entry.data.get(CONF_DEVICE_SECRET)
+    try:
+        secret = bytes.fromhex(secret_hex) if secret_hex else None
+    except ValueError:
+        _LOGGER.warning("Stored device secret is malformed; will re-derive")
+        secret = None
     coordinator = PetkitFountainCoordinator(
         hass,
         entry,
         ble_device,
         name,
         type_code,
+        secret=secret,
         connection_mode=connection_mode,
         poll_interval_minutes=poll_interval,
     )

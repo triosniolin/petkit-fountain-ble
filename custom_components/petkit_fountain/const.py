@@ -12,6 +12,15 @@ DOMAIN = "petkit_fountain"
 # protocol.MODEL_MAP without depending on later BLE advertisements.
 CONF_TYPE_CODE = "type_code"
 
+# The 8-byte device secret, stored hex-encoded. Persisted so the pairing
+# command (CMD 73) runs only ONCE per device rather than on every connect:
+# at runtime we authenticate (CMD 86) with the stored value instead of
+# re-deriving + re-pairing. New devices get a random secret provisioned at
+# config-flow time; entries created before this key existed self-migrate by
+# deriving the legacy device_id-based secret on first connect (see
+# connection._authenticate) and persisting it here — no re-pairing.
+CONF_DEVICE_SECRET = "device_secret"
+
 # Options-flow keys + defaults. Connection mode trades BLE slot residency
 # for update freshness; poll interval is the periodic GATT read cadence.
 CONF_CONNECTION_MODE = "connection_mode"

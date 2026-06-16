@@ -10,11 +10,23 @@
         "data": {
           "address": "Device"
         }
+      },
+      "confirm_repair": {
+        "title": "Device Already Paired",
+        "description": "**{name}** is already paired — most likely with the PetKit app, or with a previous Home Assistant setup whose secret was lost. To control it from Home Assistant you must re-pair it with a new secret. This **overwrites the existing pairing**: the PetKit app won't connect until you factory reset the fountain, and the two can't control it at the same time.",
+        "menu_options": {
+          "repair_confirm": "Re-pair now (replaces the existing pairing)",
+          "repair_cancel": "Cancel — leave the device untouched"
+        }
       }
     },
     "abort": {
       "no_devices_found": "No PetKit fountains found nearby. Ensure the fountain is powered and within Bluetooth range of Home Assistant.",
-      "already_configured": "This fountain is already configured."
+      "already_configured": "This fountain is already configured.",
+      "cannot_connect": "Could not reach the fountain over Bluetooth. Bring it closer to Home Assistant and try again.",
+      "init_failed": "Could not pair the fountain. Bring it closer and try again; if it keeps failing, power-cycle the fountain and re-add it.",
+      "repair_failed": "Could not re-pair the device. Bring it closer and try again; if it keeps failing, factory reset it (detach control module, hold power button 3 seconds until LEDs flash), then re-add it.",
+      "repair_cancelled": "Re-pairing cancelled. The device was left untouched."
     }
   },
   "options": {

@@ -20,11 +20,11 @@ If you own one of the untested models and want to help, install, file an issue w
 
 | Command | What it does | Payload | Registered for |
 |---|---|---|---|
-| CMD 220 | Power on/off + mode (normal/smart) | Fixed `[power, mode]` — same on every model per slespersen | All aliases |
+| CMD 220 | Power on/off + mode (normal/smart) | `[power, mode]` on W4X/W5/CTW2; `[power, suspend, mode]` (3-byte) on CTW3 | All aliases |
 | CMD 222 | Reset filter wear counter | Empty payload | All aliases |
 | CMD 221 | Set the multi-field config block (DND, LED, smart timings, etc.) | Alias-shaped: 14 bytes for W4X, 10 bytes for CTW3 — different field positions | W4X only by default |
 
-The split is by *payload shape*. CMD 220 and CMD 222 take fixed payloads that slespersen doesn't alias-branch in source — so power switch, mode select, and reset filter button can register safely for every model. CMD 221's payload positions are W4X-verified; the CTW3 shape is inferred from the read parser but never tested against real hardware, and the other aliases (W5/W5C/W5N/CTW2) share the W4X read shape and are presumed to share its write shape — also untested.
+The split is by *payload shape*. CMD 222 takes a fixed payload, and CMD 220 is fixed for the W4X family — so the reset-filter button, plus the power switch and mode select, register safely for every model. **CTW3 is the exception for CMD 220:** its firmware needs a 3-byte `[power, suspend, mode]` payload (suspend must be 1 for the pump to run in normal mode), so the integration dispatches by alias. CMD 221's payload positions are W4X-verified; the CTW3 shape is cross-checked against the [aavdberg/ha-petkit](https://github.com/aavdberg/ha-petkit) project's real-hardware captures (idx 6=dnd, 7=led switch, 8=led brightness) but still untested here, and the other aliases (W5/W5C/W5N/CTW2) share the W4X read shape and are presumed to share its write shape — also untested.
 
 ### Enabling experimental config-block writes on non-W4X models
 
@@ -51,7 +51,14 @@ Restart Home Assistant. Those entities will register and attempt writes via the 
 
 ## Important caveat — pairing breaks the official PetKit app
 
-The integration sends `CMD 73 (init_device)` on first connect, which sets a device-side secret derived from the fountain's `device_id`. **After this runs, the official PetKit app can no longer control this fountain** (the cloud-side session binding is invalidated). If you install this integration, you are committing to local-only operation. There is no documented way back without a factory reset.
+To control the fountain, the integration registers a secret on it with `CMD 73 (init_device)`. **After this runs, the official PetKit app can no longer control this fountain** (the cloud-side session binding is invalidated). If you install this integration, you are committing to local-only operation. There is no documented way back without a factory reset.
+
+Pairing happens **once**, during setup:
+
+- **A fresh (unpaired) fountain** is paired automatically with a random secret when you add it.
+- **A fountain already bound** (to the PetKit app, or a previous Home Assistant install whose secret was lost) shows a **"Device Already Paired"** prompt — choose *Re-pair now* to take it over, or *Cancel* to leave it untouched. No factory reset required.
+
+The secret is stored in the config entry; afterwards the integration just authenticates with it on each connect (`CMD 86`) and never re-sends `CMD 73`. Entries created by an older version that didn't store a secret migrate automatically on first connect — they derive the legacy secret, pair once, and persist it, with no re-pairing.
 
 ## Installation
 

@@ -213,10 +213,9 @@ def parse_device_state(data: bytes, alias: str = "W4X") -> dict[str, Any]:
     if alias == "CTW3":
         if len(data) < 26:
             return {}
-        return {
+        out: dict[str, Any] = {
             "power_status": data[0],                      # 0=off, 1=on
             "suspend_status": data[1],
-            "mode": data[2],                              # 1=normal, 2=smart
             "electric_status": data[3],
             "dnd_state": data[4],
             "warning_breakdown": data[5],
@@ -227,13 +226,23 @@ def parse_device_state(data: bytes, alias: str = "W4X") -> dict[str, Any]:
             "filter_percentage": byte_to_int(data[13]),   # 0-100
             "running_status": byte_to_int(data[14]),
             "pump_runtime_today": bytes_to_int(data[15:19]),
-            "detect_status": data[19],                    # cat presence
+            # detect_status: CTW3 firmware 111 reports 2 (not 1) for pet
+            # presence, so normalize to 0/1 (aavdberg issue #65).
+            "detect_status": 1 if data[19] else 0,        # cat presence
             # Voltages on the wire are mV per slespersen; expose in volts.
             "supply_voltage": bytes_to_short(data[20:22]) / 1000.0,
             "battery_voltage": bytes_to_short(data[22:24]) / 1000.0,
             "battery_percentage": byte_to_int(data[24]),
             "module_status": data[25],
         }
+        # mode latch: CTW3 transiently reports mode=0 during the smart-mode
+        # sleep phase. Only surface a known value (1=normal, 2=smart) so a
+        # transient 0 doesn't overwrite the cached mode and flip the UI to
+        # "unknown" (aavdberg issue #57). Callers merge by key, so omitting
+        # the key leaves the prior value intact.
+        if data[2] in (1, 2):
+            out["mode"] = data[2]
+        return out
     # W4X family (and unverified W5*/CTW2 — same 12-byte layout per slespersen).
     if len(data) < 12:
         return {}
@@ -261,14 +270,17 @@ def parse_device_configuration(data: bytes, alias: str = "W4X") -> dict[str, Any
     if alias == "CTW3":
         if len(data) < 9:
             return {}
+        # Byte order verified against real CTW3 captures by aavdberg (#70):
+        # idx 6 = dnd switch, 7 = led switch, 8 = led brightness. The earlier
+        # inferred W4X-style order (led at 6/7, dnd at 8) was off-by-one.
         return {
             "smart_time_on": data[0],                       # minutes (1-60)
             "smart_time_off": data[1],                      # minutes (1-60)
             "battery_working_time": bytes_to_short(data[2:4]),  # minutes
             "battery_sleep_time": bytes_to_short(data[4:6]),    # minutes
-            "led_switch": data[6],
-            "led_brightness": data[7],
-            "do_not_disturb_switch": data[8],
+            "do_not_disturb_switch": data[6],
+            "led_switch": data[7],
+            "led_brightness": data[8],
             "is_locked": data[9] if len(data) > 9 else None,
         }
     # W4X family (and unverified W5*/CTW2 — same 14-byte layout per slespersen).
@@ -456,10 +468,10 @@ def _build_config_payload_w4x(config: dict[str, int]) -> list[int]:
 
 
 def _build_config_payload_ctw3(config: dict[str, int]) -> list[int]:
-    """10-byte CTW3 layout — inferred from slespersen's read parser,
-    UNTESTED on real hardware. Field order matches the read parser's
-    byte positions exactly; if the write shape differs, this is the
-    function that needs patching.
+    """10-byte CTW3 layout. Byte order verified against real CTW3 CMD 221
+    captures by aavdberg (#70): idx 6 = dnd switch, 7 = led switch, 8 = led
+    brightness. (The earlier inferred order — led at 6/7, dnd at 8 — was
+    off-by-one.) Kept symmetric with parse_device_configuration's CTW3 branch.
     """
     bat_work_hi, bat_work_lo = _split_short(config.get("battery_working_time") or 0)
     bat_sleep_hi, bat_sleep_lo = _split_short(config.get("battery_sleep_time") or 0)
@@ -468,11 +480,26 @@ def _build_config_payload_ctw3(config: dict[str, int]) -> list[int]:
         config.get("smart_time_off", 0) & 0xFF,
         bat_work_hi, bat_work_lo,
         bat_sleep_hi, bat_sleep_lo,
+        config.get("do_not_disturb_switch", 0) & 0xFF,
         config.get("led_switch", 0) & 0xFF,
         config.get("led_brightness", 0) & 0xFF,
-        config.get("do_not_disturb_switch", 0) & 0xFF,
         config.get("is_locked", 0) & 0xFF,
     ]
+
+
+def build_ctw3_mode_payload(power: int, mode: int) -> list[int]:
+    """CTW3 CMD 220 — 3-byte [power, suspend, mode].
+
+    The suspend byte must be 1 for the pump to actually run in normal mode;
+    smart mode (which cycles itself) and power-off use 0. Per aavdberg's
+    real-hardware finding (#57): a 2-byte payload leaves the CTW3 pump off in
+    normal mode. W4X/W5/CTW2 use the plain 2-byte [power, mode] form.
+    """
+    if power == 0:
+        suspend = 0
+    else:
+        suspend = 1 if mode == 1 else 0
+    return [power & 1, suspend, mode & 0xFF]
 
 
 # Sentinel alias for devices we couldn't identify. Read parsers fall through
