@@ -32,12 +32,12 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 # Poll cadence. The fountain pushes a complete state+config frame (CMD 230)
-# every ~3 seconds without prompting, so most "fresh data" comes through the
-# unsolicited path (see PetkitFountainConnection._on_unsolicited_status).
-# The active poll only serves to read fields the push doesn't carry — supply
-# voltage (CMD 66), firmware (CMD 200) — and as a watchdog that detects
-# connection drops the disconnect callback might miss. 5 minutes is generous
-# for both.
+# in bursts (observed: ~4 frames at ~3s intra-burst spacing, ~once per minute
+# overall), so most "fresh data" arrives via the unsolicited path (see
+# PetkitFountainConnection._on_unsolicited_status). The active poll only
+# reads fields the push doesn't carry — supply voltage (CMD 66), firmware
+# (CMD 200) — and acts as a watchdog that detects connection drops the
+# disconnect callback might miss. 5 minutes is generous for both.
 POLL_INTERVAL = timedelta(minutes=5)
 
 

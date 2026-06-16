@@ -16,7 +16,7 @@ Other PetKit fountain families (W5 / CTW2 / CTW3) are **not** supported — only
 - 2 selects: operating mode (Normal / Smart), LED brightness
 - 2 number entities: smart-mode on/off durations
 - 1 button: filter reset
-- Real-time state updates via the fountain's own ~3-second push broadcasts (no need to poll aggressively)
+- State updates via the fountain's own unsolicited push broadcasts — typically a burst of frames roughly once per minute under steady operation, so most monitoring is push-driven without aggressive polling
 - Diagnostics export with sensitive fields redacted
 
 ## Important caveat — pairing breaks the official PetKit app

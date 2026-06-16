@@ -82,10 +82,15 @@ class PetkitFountainConnection:
         self._sequence = 0
         self._waiters: dict[int, asyncio.Future[bytes]] = {}
         self._initialized = False
-        # Each (cmd, seq) tuple should fire exactly once. The fountain's BLE
-        # stack delivers duplicate notifications on the notify channel; we
-        # de-dup here so spurious "Unsolicited frame" warnings don't fill logs.
-        self._last_seen: dict[int, int] = {}
+        # The fountain's BLE stack delivers duplicate notifications on the
+        # notify channel — every frame arrives twice in quick succession. We
+        # de-dup by full raw-frame bytes per cmd-code, NOT by seq. Some
+        # firmwares use a global incrementing seq (current W4X behavior), but
+        # trusting that for dedup would silently drop legitimate broadcasts if
+        # a future firmware sent unsolicited frames with a constant seq.
+        # Bytewise equality is safe in either case: identical bytes within the
+        # flush window = same frame; different bytes = different frame.
+        self._last_raw: dict[int, bytes] = {}
 
         # Populated by the init sequence:
         self.device_id_bytes: list[int] | None = None
@@ -154,20 +159,21 @@ class PetkitFountainConnection:
         """Decode an inbound frame and resolve the awaiting future, if any.
 
         The W4X firmware delivers each notification twice on the notify
-        channel — we suppress the duplicate by (cmd, seq) so logs stay
-        readable and we don't waste cycles re-parsing.
+        channel — we suppress the duplicate by bytewise equality of the raw
+        frame, keyed on cmd-code. See the comment on self._last_raw above for
+        why we don't trust the seq byte for this.
         """
-        _LOGGER.debug("BLE notify received: %s", bytes(data).hex())
-        frame = parse_frame(bytes(data))
+        raw = bytes(data)
+        _LOGGER.debug("BLE notify received: %s", raw.hex())
+        frame = parse_frame(raw)
         if frame is None:
-            _LOGGER.warning("Dropping malformed BLE frame: %s", bytes(data).hex())
+            _LOGGER.warning("Dropping malformed BLE frame: %s", raw.hex())
             return
         cmd = frame["cmd"]
-        seq = frame["seq"]
-        if self._last_seen.get(cmd) == seq:
+        if self._last_raw.get(cmd) == raw:
             # Duplicate copy of the same frame; ignore.
             return
-        self._last_seen[cmd] = seq
+        self._last_raw[cmd] = raw
         fut = self._waiters.pop(cmd, None)
         if fut is not None and not fut.done():
             fut.set_result(frame["data"])

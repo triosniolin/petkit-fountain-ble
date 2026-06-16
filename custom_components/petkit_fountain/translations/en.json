@@ -3,10 +3,10 @@
     "flow_title": "{name}",
     "step": {
       "bluetooth_confirm": {
-        "description": "Add the discovered PetKit fountain {name} ({address})?"
+        "description": "Add the discovered PetKit fountain {name} ({address})?\n\n⚠ WARNING — irreversible: on first connect this integration sends a pairing command that overwrites the fountain's device secret. After this runs, the official PetKit app will no longer be able to control the fountain. There is no documented way to undo this without a factory reset. Only proceed if you intend to control the fountain through Home Assistant exclusively."
       },
       "user": {
-        "description": "Choose a discovered PetKit fountain to set up.",
+        "description": "Choose a discovered PetKit fountain to set up.\n\n⚠ WARNING — irreversible: on first connect this integration sends a pairing command that overwrites the fountain's device secret. After this runs, the official PetKit app will no longer be able to control the fountain. There is no documented way to undo this without a factory reset. Only proceed if you intend to control the fountain through Home Assistant exclusively.",
         "data": {
           "address": "Device"
         }

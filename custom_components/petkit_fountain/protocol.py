@@ -243,10 +243,11 @@ def parse_combined_status(data: bytes) -> dict[str, Any]:
     block (cmd-210 layout extended with 4 trailing bytes whose meaning is
     not yet decoded), next 14 bytes are the config block (cmd-211 layout).
 
-    The fountain pushes this frame every ~30 seconds and after any local
-    state change, so subscribing to it gives near-real-time updates without
-    additional polling. Returns the merged field dict; callers should pour
-    it directly into the coordinator's PetkitFountainData.
+    The fountain emits these frames unsolicited in bursts — observed pattern
+    is ~4 frames at ~3-second intra-burst spacing, with the next burst about
+    one minute later. Subscribing to them gives roughly per-minute updates
+    without active polling. Returns the merged field dict; callers should
+    pour it directly into the coordinator's PetkitFountainData.
     """
     out: dict[str, Any] = {}
     if len(data) >= 12:
