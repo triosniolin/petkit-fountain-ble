@@ -7,6 +7,11 @@ extended it. See protocol.py header for full attribution.
 
 DOMAIN = "petkit_fountain"
 
+# Config entry data keys (in addition to HA's CONF_ADDRESS/CONF_NAME).
+# Pinning the device-type code at discovery lets us look up the SKU in
+# protocol.MODEL_MAP without depending on later BLE advertisements.
+CONF_TYPE_CODE = "type_code"
+
 # GATT characteristics (per slespersen/PetkitW5BLEMQTT constants.py)
 WRITE_UUID = "0000aaa2-0000-1000-8000-00805f9b34fb"
 READ_UUID = "0000aaa1-0000-1000-8000-00805f9b34fb"

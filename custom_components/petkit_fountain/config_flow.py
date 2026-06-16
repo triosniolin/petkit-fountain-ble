@@ -10,7 +10,8 @@ from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 
-from .const import DOMAIN, NAME_PREFIX
+from .const import CONF_TYPE_CODE, DOMAIN, NAME_PREFIX
+from .protocol import extract_type_code
 
 
 class PetkitFountainConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -43,6 +44,10 @@ class PetkitFountainConfigFlow(ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_ADDRESS: info.address,
                     CONF_NAME: info.name or "PetKit Fountain",
+                    # Pin the type code from the discovery advertisement so
+                    # the model is authoritative even if later advertisements
+                    # arrive with empty service_data.
+                    CONF_TYPE_CODE: extract_type_code(info.service_data),
                 },
             )
         self._set_confirm_only()
@@ -65,6 +70,7 @@ class PetkitFountainConfigFlow(ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_ADDRESS: address,
                     CONF_NAME: info.name or "PetKit Fountain",
+                    CONF_TYPE_CODE: extract_type_code(info.service_data),
                 },
             )
 

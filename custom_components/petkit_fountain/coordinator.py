@@ -28,6 +28,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .connection import PetkitFountainConnection
 from .const import DOMAIN
+from .protocol import MODEL_MAP
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,25 +114,22 @@ class PetkitFountainCoordinator:
         entry: ConfigEntry,
         ble_device: BLEDevice,
         name: str,
+        type_code: int | None,
     ) -> None:
         self.hass = hass
         self.entry = entry
         self.address: str = ble_device.address
         self.name: str = name
-        # Friendly model derived from the BLE local_name. The pinned `name`
-        # may be a user-friendly override ("PetKit Fountain") that doesn't
-        # preserve the UVC suffix, so we look at the raw advertisement
-        # instead. Both W4X variants share the parser branch but they're
-        # different SKUs, so the device card should reflect which one.
-        ble_local_name = (ble_device.name or "").upper()
-        if "UVC" in ble_local_name:
-            self.model = "Eversweet 3 Pro UVC"
-        elif "W4X" in ble_local_name:
-            self.model = "Eversweet 3 Pro"
-        else:
-            # Unknown / renamed device — default to the more conservative SKU
-            # (non-UVC) since UVC adds a feature this generic name doesn't.
-            self.model = "Eversweet 3 Pro"
+        # Friendly model — three-step resolution, most authoritative first:
+        #   1. Pinned type_code from MODEL_MAP (captured at discovery from the
+        #      service-data byte the device itself advertises; doesn't drift).
+        #   2. String match on the BLE local_name AND the pinned config-entry
+        #      name combined — covers the case where the discovery capture
+        #      missed type_code but at least one name source has the SKU
+        #      marker (e.g. "Petkit_W4XUVC").
+        #   3. Default to non-UVC. UVC is the upcharge feature; better to
+        #      under-promise than mislabel a non-UVC unit as UVC.
+        self.model = self._resolve_model(ble_device.name, name, type_code)
         self.data = PetkitFountainData()
 
         self._connection = PetkitFountainConnection(
@@ -140,6 +138,24 @@ class PetkitFountainCoordinator:
         self._unsub_adv: CALLBACK_TYPE | None = None
         self._unsub_poll: CALLBACK_TYPE | None = None
         self._poll_in_progress = False
+
+    @staticmethod
+    def _resolve_model(
+        ble_local_name: str | None, pinned_name: str | None, type_code: int | None
+    ) -> str:
+        """Derive the human-readable model name. See docstring on the
+        `model` field in __init__ for the resolution order rationale."""
+        # 1. Authoritative: type-code lookup.
+        if type_code is not None and type_code in MODEL_MAP:
+            return MODEL_MAP[type_code]["product_name"]
+        # 2. String-match defense in depth on whatever name sources we have.
+        combined = f"{ble_local_name or ''} {pinned_name or ''}".upper()
+        if "UVC" in combined:
+            return "Eversweet 3 Pro UVC"
+        if "W4X" in combined:
+            return "Eversweet 3 Pro"
+        # 3. Conservative default.
+        return "Eversweet 3 Pro"
 
     # ─────────────────────── passive advertisement path ──────────────────────
 

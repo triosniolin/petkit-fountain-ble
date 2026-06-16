@@ -56,7 +56,7 @@ MODEL_MAP: dict[int, dict[str, Any]] = {
           "device_type": 14, "type_code": 5},
     223: {"name": "Petkit_CTW3", "alias": "CTW3", "product_name": "Eversweet Max",
           "device_type": 24, "type_code": 0},
-    228: {"name": "Petkit_W4XUVC", "alias": "W4X", "product_name": "Eversweet 3 Pro (UVC)",
+    228: {"name": "Petkit_W4XUVC", "alias": "W4X", "product_name": "Eversweet 3 Pro UVC",
           "device_type": 14, "type_code": 6},
 }
 
@@ -295,6 +295,41 @@ def calculate_filter_days_left(
 
 
 # ────────────────────────── secret derivation ────────────────────────────────
+
+
+ADVERT_SERVICE_UUID = "0000c1a4-0000-1000-8000-00805f9b34fb"
+
+
+def extract_type_code(service_data: dict[str, bytes] | None) -> int | None:
+    """Pull PetKit's device-type identifier out of a BLE advertisement's
+    service_data block. The identifier indexes into MODEL_MAP and tells us
+    the SKU authoritatively (UVC vs non-UVC, W4X vs CTW3 family, etc.).
+
+    The W4X family advertises a 6-byte payload under
+    ``0000c1a4-0000-1000-8000-00805f9b34fb`` with the type identifier at
+    offset 5 (empirically verified against a Petkit_W4XUVC, 2026-06-15:
+    payload was ``0102030400e4``, byte 5 = 0xe4 = 228 = W4XUVC).
+
+    Resolution order: look up the PetKit service UUID directly; if absent,
+    fall back to concatenating *all* service_data values in dict order
+    (slespersen's pattern) so a hypothetical future firmware that uses a
+    different UUID still has a chance of being read. Returns None if the
+    buffer is too short to contain offset 5.
+    """
+    if not service_data:
+        return None
+    # Preferred: the specific PetKit service UUID. Stable, unambiguous.
+    primary = service_data.get(ADVERT_SERVICE_UUID)
+    if primary is not None and len(primary) >= 6:
+        return primary[5]
+    # Fallback: concat-and-index (matches slespersen's original approach).
+    # Only relevant if PetKit ever changes the advertisement service UUID.
+    combined = bytearray()
+    for chunk in service_data.values():
+        combined.extend(chunk)
+    if len(combined) < 6:
+        return None
+    return combined[5]
 
 
 def _split_short(val: int) -> tuple[int, int]:
