@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project loosely adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-06-15
+
+### Fixed
+
+- **`_on_push_update` docstring** in `coordinator.py` said "every ~30s" — stale from before the v0.1.1 cadence correction. Now matches reality: "~1 burst/min, 4 frames at ~3s intra-burst spacing."
+- **Hardcoded UVC model on every device.** `entity.py` always reported `Eversweet 3 Pro UVC` regardless of which W4X SKU was connected. Model is now derived from the BLE local_name at coordinator init — `Petkit_W4XUVC` → "Eversweet 3 Pro UVC", `Petkit_W4X` → "Eversweet 3 Pro". The coordinator exposes a `model` attribute so the logic lives in one place.
+
+### Removed
+
+- **Dead `calculate_energy_wh` function** in `protocol.py`. Carried an acknowledged kWh-vs-Wh unit ambiguity from upstream slespersen but was never wired to any entity, so dropping it. A comment marker is left in place explaining where to find it in git history if a future release adds an energy sensor.
+
 ## [0.1.1] — 2026-06-15
 
 ### Changed
@@ -41,6 +52,7 @@ Other features:
 
 Tested on the Eversweet 3 Pro UVC (`Petkit_W4XUVC`). The non-UVC Eversweet 3 Pro (`Petkit_W4X`) uses the same parser branch and should work but is unverified. Other PetKit model families (W5 / CTW2 / CTW3) are recognized in the model map but not parsed — extend `protocol.py` to add support.
 
+[0.1.2]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/triosniolin/petkit-fountain-ble/releases/tag/v0.1.0
 [connection.py]: custom_components/petkit_fountain/connection.py

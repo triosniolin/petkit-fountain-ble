@@ -118,6 +118,20 @@ class PetkitFountainCoordinator:
         self.entry = entry
         self.address: str = ble_device.address
         self.name: str = name
+        # Friendly model derived from the BLE local_name. The pinned `name`
+        # may be a user-friendly override ("PetKit Fountain") that doesn't
+        # preserve the UVC suffix, so we look at the raw advertisement
+        # instead. Both W4X variants share the parser branch but they're
+        # different SKUs, so the device card should reflect which one.
+        ble_local_name = (ble_device.name or "").upper()
+        if "UVC" in ble_local_name:
+            self.model = "Eversweet 3 Pro UVC"
+        elif "W4X" in ble_local_name:
+            self.model = "Eversweet 3 Pro"
+        else:
+            # Unknown / renamed device — default to the more conservative SKU
+            # (non-UVC) since UVC adds a feature this generic name doesn't.
+            self.model = "Eversweet 3 Pro"
         self.data = PetkitFountainData()
 
         self._connection = PetkitFountainConnection(
@@ -142,8 +156,9 @@ class PetkitFountainCoordinator:
 
     @callback
     def _on_push_update(self, parsed: dict[str, Any]) -> None:
-        """Fires on every CMD 230 broadcast — typically every ~30s. Updates
-        the data block and notifies entities without waiting for the poll."""
+        """Fires on every CMD 230 broadcast — observed cadence is roughly one
+        burst per minute (4 frames at ~3s intra-burst spacing). Updates the
+        data block and notifies entities without waiting for the next poll."""
         self.data.update_from_poll(parsed)
         async_dispatcher_send(self.hass, signal_update(self.entry.entry_id))
 

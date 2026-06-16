@@ -27,7 +27,7 @@ class PetkitFountainEntity(Entity):
             identifiers={(DOMAIN, self.coordinator.address)},
             name=self.coordinator.name,
             manufacturer="PetKit",
-            model="Eversweet 3 Pro UVC",
+            model=self.coordinator.model,
             connections={("bluetooth", self.coordinator.address)},
         )
         if d.serial:

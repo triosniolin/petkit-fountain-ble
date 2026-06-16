@@ -267,18 +267,11 @@ def calculate_water_purified_l(alias: str, pump_runtime_seconds: int) -> float:
     return (1.5 * pump_runtime_seconds / 60.0) / 1.8
 
 
-def calculate_energy_wh(alias: str, pump_runtime_seconds: int) -> float:
-    """Energy consumed in Wh. Per slespersen calculate_energy_usage, W4X branch.
-
-    The W4X branch evaluates to (0.75 * pump_runtime_seconds) / 3_600_000.
-    NOTE upstream slespersen's formula divides by 3_600_000 which yields kWh,
-    NOT Wh — slespersen labels it ambiguously. We follow their math; downstream
-    sensors should be aware the value is in kWh-ish units. Tune empirically
-    after a few weeks of data.
-    """
-    if alias != "W4X":
-        return 0.0
-    return (0.75 * pump_runtime_seconds) / 3_600_000
+# NOTE: slespersen's calculate_energy_usage (Wh-vs-kWh ambiguity in the
+# constant divisor) was ported here in 0.1.0 but never wired to a sensor,
+# so it was removed in 0.1.2 as dead code. Resurrect from git history if a
+# future release adds an energy sensor — and validate the unit empirically
+# with a kill-a-watt meter before exposing the value.
 
 
 def calculate_filter_days_left(
