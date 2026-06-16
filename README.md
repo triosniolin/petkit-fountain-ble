@@ -103,8 +103,9 @@ Built on protocol research by:
 
 - **slespersen** — original W5 BLE protocol reverse-engineering, MIT-licensed at [slespersen/PetkitW5BLEMQTT](https://github.com/slespersen/PetkitW5BLEMQTT)
 - **Jezza34000** — extended slespersen's library for CTW2/CTW3/W4X model families ([Jezza34000/PetkitW5BLEMQTT](https://github.com/Jezza34000/PetkitW5BLEMQTT)) and maintains the cloud-based PetKit HACS integration ([Jezza34000/homeassistant_petkit](https://github.com/Jezza34000/homeassistant_petkit))
+- **aavdberg** — [aavdberg/ha-petkit](https://github.com/aavdberg/ha-petkit), a separately-developed local-BLE PetKit integration. The v0.4.0 init-once / stored-secret pairing model and the "device already paired" re-pair recovery flow (their [PR #76](https://github.com/aavdberg/ha-petkit/pull/76)) were adapted from that project, and our CTW3 write paths — config-block byte order and the 3-byte CMD 220 payload — were corrected against its real-hardware findings. Our verified W4X parsing was confirmed byte-for-byte identical to theirs.
 
-This integration ports the W4X path of that protocol research into a native HA `custom_components` package with no MQTT broker dependency. The `protocol.py` module preserves the original MIT copyright notice per upstream terms.
+This integration ports the W4X path of that protocol research into a native HA `custom_components` package with no MQTT broker dependency. The `protocol.py` module preserves the original MIT copyright notice per upstream terms. The aavdberg-derived design and protocol corrections were re-implemented independently, not copied verbatim.
 
 ## License
 
