@@ -379,8 +379,10 @@ def extract_type_code(service_data: dict[str, bytes] | None) -> int | None:
 
     The W4X family advertises a 6-byte payload under
     ``0000c1a4-0000-1000-8000-00805f9b34fb`` with the type identifier at
-    offset 5 (empirically verified against a Petkit_W4XUVC, 2026-06-15:
-    payload was ``0102030400e4``, byte 5 = 0xe4 = 228 = W4XUVC).
+    offset 5 (empirically verified on a Petkit_W4XUVC: the first 4 bytes
+    are the device's MAC suffix, byte 4 is reserved/zero, byte 5 is the
+    type code — e.g. a synthetic payload of ``0102030400e4`` would carry
+    type 0xE4 = 228 = W4XUVC).
 
     Resolution order: look up the PetKit service UUID directly; if absent,
     fall back to concatenating *all* service_data values in dict order

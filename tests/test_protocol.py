@@ -31,8 +31,11 @@ def _load_protocol():
 p = _load_protocol()
 
 
-# Captured advertisement service_data, 00:00:01:02:03:04 (Petkit_W4XUVC),
-# 2026-06-15. Byte 5 = 0xE4 = 228 = the MODEL_MAP key for the W4XUVC.
+# Synthetic W4XUVC advertisement fixture matching the layout observed on
+# real hardware: bytes 0-3 are the device's MAC suffix, byte 4 is reserved,
+# byte 5 carries the type code. The MAC suffix here is fabricated; what
+# matters for the test is byte 5 = 0xE4 = 228 = the MODEL_MAP key for the
+# W4XUVC.
 W4XUVC_SERVICE_DATA = {
     "0000c1a4-0000-1000-8000-00805f9b34fb": bytes.fromhex("0102030400e4"),
 }
