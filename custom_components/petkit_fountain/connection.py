@@ -66,11 +66,16 @@ class PetkitFountainConnection:
         self,
         ble_device: BLEDevice,
         name: str,
+        alias: str = "W4X",
         on_unsolicited_status: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.ble_device = ble_device
         self.name = name
-        self.alias = "W4X"  # All Petkit_W4X* devices use the W4X parser branch.
+        # Alias selects which parser branch is applied to inbound frames.
+        # Defaults to W4X (the only verified branch) so callers that haven't
+        # been updated don't accidentally route CTW3 frames through W4X
+        # parsers — they'd just see "untested" results, not crashes.
+        self.alias = alias
         # Coordinator-provided callback for CMD 230 push frames. Fires on the
         # event loop thread (bleak calls _on_notify synchronously from the
         # async loop), so callback must be a plain sync function that doesn't
@@ -182,7 +187,7 @@ class PetkitFountainConnection:
         # broadcast — parse + hand off so entities update without waiting for
         # the next poll. Other unsolicited cmd codes fall through to debug.
         if cmd == CMD_COMBINED_STATUS and self._on_unsolicited_status is not None:
-            parsed = parse_combined_status(frame["data"])
+            parsed = parse_combined_status(frame["data"], alias=self.alias)
             if parsed:
                 try:
                     self._on_unsolicited_status(parsed)
@@ -312,11 +317,19 @@ class PetkitFountainConnection:
 
             # Each read is independently fallible (timeout, disconnect mid-poll).
             # We accumulate what we got and let the rest stay stale.
+            # Parsers that vary by alias receive it; ones that don't take it
+            # are wrapped to keep the loop uniform.
+            def _parse_state(raw: bytes) -> dict[str, Any]:
+                return parse_device_state(raw, alias=self.alias)
+
+            def _parse_config(raw: bytes) -> dict[str, Any]:
+                return parse_device_configuration(raw, alias=self.alias)
+
             for cmd, parser, label in (
                 (CMD_DEVICE_INFO, parse_firmware, "firmware"),
                 (CMD_BATTERY, parse_supply, "supply"),
-                (CMD_DEVICE_STATE, parse_device_state, "state"),
-                (CMD_DEVICE_CONFIG, parse_device_configuration, "config"),
+                (CMD_DEVICE_STATE, _parse_state, "state"),
+                (CMD_DEVICE_CONFIG, _parse_config, "config"),
             ):
                 payload = [] if cmd == CMD_DEVICE_INFO else [0, 0]
                 try:

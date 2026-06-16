@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project loosely adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-06-15
+
+Extends discovery + parsing support to the rest of the PetKit fountain family that the upstream slespersen/Jezza34000 research covers — Eversweet Mini (W5/W5C/W5N), Eversweet Solo 2 (CTW2), and Eversweet Max (CTW3) — all explicitly marked **untested**. The verified-on-hardware set is still Eversweet 3 Pro UVC only.
+
+### Added
+
+- **Wider discovery filter.** `manifest.json` and config_flow now match `Petkit_*` instead of `Petkit_W4X*`. Any PetKit fountain advertising the W4X-style or CTW3-style payload will be offered in the discovery prompt.
+- **Per-alias parser branches.** `parse_device_state`, `parse_device_configuration`, and `parse_combined_status` accept an `alias` argument that selects between the W4X 12-byte / 14-byte frames (shared with W5/W5C/W5N/CTW2) and the CTW3 26-byte / 10-byte frames. CTW3 carries fields W4X doesn't: battery voltage/percentage, pump runtime today, cat-presence detection, electric-status discrimination.
+- **CTW3-only sensors + binary sensors.** Battery voltage, battery percentage, pump runtime today, low-battery warning, cat-detected. Registered only when the device's alias resolves to CTW3.
+- **Per-alias water-purified multipliers.** Slespersen's `f2/f3` constants per device family: W5C `(1.0, 1.3)`, W4X `(1.8, 1.5)`, CTW3 `(3.0, 1.5)`, default `(2.0, 1.5)` for unspecified aliases.
+- **Status table in README** spelling out verified vs untested model rows and an explicit "why write entities are disabled for non-W4X" note.
+- **Options flow for connection mode + poll interval.** Settings → Devices & Services → PetKit Fountain → Configure now exposes two knobs:
+  - **Connection mode** — *persistent* (default; one BLE adapter slot held continuously, real-time push frames captured) vs *on-demand* (slot freed between polls; push frames silent — updates only arrive at the poll interval). Useful when the BLE adapter is constrained and other connect-based devices are competing for slots.
+  - **Poll interval** — 1–60 minutes, default 5. In persistent mode this is a backstop; in on-demand mode it's the only data path, so lower the interval (60–120s) when switching.
+  Saving the form triggers a clean entry reload.
+- **Expanded test suite to 30 tests.** Synthetic CTW3 frame fixtures (state + config + combined-status), short-frame rejection, per-alias water-purified math, and explicit regression coverage of the `resolve_alias` / `resolve_model` fallback chains — including a guard that unrecognized devices resolve to `ALIAS_UNKNOWN` rather than silently defaulting to a write-enabled alias. No real CTW3 hardware accessible, so parsers are guarded against regression even though they're unverified end-to-end.
+
+### Changed
+
+- **`coordinator.alias` is now derived** from `MODEL_MAP[type_code]["alias"]` (with name-substring fallbacks) instead of hardcoded `"W4X"`. The connection layer routes inbound frames through the correct parser branch based on this alias. **Unresolved devices return `ALIAS_UNKNOWN`, NOT `W4X`** — read parsers still route UNKNOWN through the W4X read branch (safe), but write entities gate on `alias == "W4X"` exactly, so an unrecognized future SKU never gets W4X write commands sent at it.
+- **`coordinator.model` default**, when neither type_code nor name-string match anything we know, is now the generic `PetKit Fountain` (instead of `Eversweet 3 Pro`). Avoids actively mislabeling an unknown SKU as a specific model.
+
+### Fixed
+
+- **"Water purified" sensor now uses the device's actual alias** instead of hardcoding `"W4X"`. The per-alias multipliers (W5C / W4X / CTW3 each have different `(f2, f3)` constants per slespersen) were wired into the calculator but never reached the call site, so CTW3 / W5C users would have gotten W4X's constants applied to their pump runtime. Cosmetic-only — the value is a derived lifetime estimate, not control input — but the multipliers actually take effect now.
+- **Config writes no longer silently zero out unread fields.** `async_patch_config` previously rebuilt the 14-byte CMD 221 payload from cached state with `or 0` fallbacks for any `None` field. If a write fired before the config block (CMD 211) had been read — for example, a service call hitting the integration programmatically before the first poll — unpatched fields like DND schedule times and smart-mode timings would be written as zeros, corrupting real device state. Now `_current_config()` returns `None` when the cache is incomplete and `async_patch_config` raises `HomeAssistantError` with an actionable message instead of writing partial garbage.
+- **Entities now go unavailable when the fountain stops responding.** Previously the availability gate was effectively "any value was ever populated" — a powered-off or out-of-range fountain would keep reporting stale last-known values as live, indefinitely. The coordinator now stamps a `last_seen` timestamp on every advertisement, push frame, and successful poll, and entities are unavailable if nothing has updated it within 2.5× the configured poll interval (= 12.5 min on the 5-min default). Per-platform `available` overrides were removed in favor of one consistent freshness gate in the base entity.
+
+### Breaking
+
+- **Minimum Home Assistant version raised to 2024.11.0** (was 2024.1.0). The new options flow uses the no-arg `OptionsFlow` pattern that requires HA 2024.11+ — older versions raise `AttributeError: 'PetkitFountainOptionsFlow' object has no attribute 'config_entry'` when the user clicks Configure. Bumping the floor is the cleanest fix; carrying the legacy constructor-arg pattern would mean code that fights HA's deprecation path. If you're on an older HA, upgrade HA first.
+
+### Notes — safety posture for untested SKUs
+
+- **Write entities (switch / select / number / button) are not registered for non-W4X devices.** CMD 220 / 221 / 222 payload byte positions are verified on W4X but unverified on CTW3 and older W5 firmwares; sending a wrong-position payload could change unintended settings.
+- **CMD 73 still runs unconditionally** on first connect for every alias — the destructive-pairing warning in the config_flow confirm dialog applies to every model, not just W4X. The pairing-secret derivation comes from slespersen's W5-originated code; behavior on other models is extrapolated, not verified.
+- **The discovery filter widening means a user with an untested model can now install the integration.** They'll get read-only telemetry that's likely correct. If something is wrong, file an issue with the model + a brief description of what's broken.
+
 ## [0.1.3] — 2026-06-15
 
 ### Changed
@@ -72,6 +110,7 @@ Other features:
 
 Tested on the Eversweet 3 Pro UVC (`Petkit_W4XUVC`). The non-UVC Eversweet 3 Pro (`Petkit_W4X`) uses the same parser branch and should work but is unverified. Other PetKit model families (W5 / CTW2 / CTW3) are recognized in the model map but not parsed — extend `protocol.py` to add support.
 
+[0.2.0]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/triosniolin/petkit-fountain-ble/compare/v0.1.0...v0.1.1

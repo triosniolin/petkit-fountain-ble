@@ -58,6 +58,25 @@ BINARY_SENSORS: tuple[PetkitBinarySensorDescription, ...] = (
     ),
 )
 
+# CTW3-only binary sensors. Eversweet Max has a battery (so low_battery is
+# meaningful) and a cat-presence detector (detect_status). Untested.
+CTW3_BINARY_SENSORS: tuple[PetkitBinarySensorDescription, ...] = (
+    PetkitBinarySensorDescription(
+        key="low_battery",
+        translation_key="low_battery",
+        device_class=BinarySensorDeviceClass.BATTERY,
+        value_fn=lambda d: bool(d.low_battery) if d.low_battery is not None else None,
+    ),
+    PetkitBinarySensorDescription(
+        key="detect_status",
+        translation_key="detect_status",
+        device_class=BinarySensorDeviceClass.OCCUPANCY,
+        value_fn=lambda d: (
+            bool(d.detect_status) if d.detect_status is not None else None
+        ),
+    ),
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -65,9 +84,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: PetkitFountainCoordinator = hass.data[DOMAIN][entry.entry_id]
+    descriptions = list(BINARY_SENSORS)
+    if coordinator.alias == "CTW3":
+        descriptions.extend(CTW3_BINARY_SENSORS)
     async_add_entities(
         PetkitFountainBinarySensor(coordinator, description)
-        for description in BINARY_SENSORS
+        for description in descriptions
     )
 
 
@@ -87,6 +109,4 @@ class PetkitFountainBinarySensor(PetkitFountainEntity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         return self.entity_description.value_fn(self.coordinator.data)
 
-    @property
-    def available(self) -> bool:
-        return self.is_on is not None
+    # Availability inherited from PetkitFountainEntity (last_seen freshness).

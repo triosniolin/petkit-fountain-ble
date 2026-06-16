@@ -122,8 +122,11 @@ SENSORS: tuple[PetkitSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfVolume.LITERS,
         suggested_display_precision=1,
+        # alias passed from PetkitFountainData so non-W4X devices get the
+        # right slespersen multiplier — W5C uses (1.0, 1.3), CTW3 uses
+        # (3.0, 1.5), W4X uses (1.8, 1.5), unknown falls to (2.0, 1.5).
         value_fn=lambda d: (
-            round(calculate_water_purified_l("W4X", d.pump_runtime), 2)
+            round(calculate_water_purified_l(d.alias or "W4X", d.pump_runtime), 2)
             if d.pump_runtime is not None
             else None
         ),
@@ -137,6 +140,45 @@ SENSORS: tuple[PetkitSensorDescription, ...] = (
     ),
 )
 
+# CTW3-only sensors. The Eversweet Max family advertises a 26-byte state
+# frame with battery telemetry + daily pump runtime that W4X doesn't carry.
+# Untested — slespersen documents these fields but we have no hardware to
+# verify against. Field shapes are likely correct; values may need empirical
+# tuning. Only registered when the device's alias is CTW3.
+CTW3_SENSORS: tuple[PetkitSensorDescription, ...] = (
+    PetkitSensorDescription(
+        key="battery_voltage",
+        translation_key="battery_voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        suggested_display_precision=2,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.battery_voltage,
+    ),
+    PetkitSensorDescription(
+        key="battery_percentage",
+        translation_key="battery_percentage",
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=lambda d: d.battery_percentage,
+    ),
+    PetkitSensorDescription(
+        key="pump_runtime_today",
+        translation_key="pump_runtime_today",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        suggested_display_precision=1,
+        value_fn=lambda d: (
+            round(d.pump_runtime_today / 60, 2)
+            if d.pump_runtime_today is not None
+            else None
+        ),
+    ),
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -144,8 +186,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: PetkitFountainCoordinator = hass.data[DOMAIN][entry.entry_id]
+    descriptions = list(SENSORS)
+    if coordinator.alias == "CTW3":
+        descriptions.extend(CTW3_SENSORS)
     async_add_entities(
-        PetkitFountainSensor(coordinator, description) for description in SENSORS
+        PetkitFountainSensor(coordinator, description) for description in descriptions
     )
 
 
@@ -165,10 +210,9 @@ class PetkitFountainSensor(PetkitFountainEntity, SensorEntity):
     def native_value(self) -> Any:
         return self.entity_description.value_fn(self.coordinator.data)
 
-    @property
-    def available(self) -> bool:
-        # Per-sensor availability — diagnostic sensors (rssi, firmware, serial)
-        # can show as soon as we have advertisement / init data; others require
-        # at least one successful poll. Override the base entity's RSSI-only
-        # check by considering this sensor's own value.
-        return self.native_value is not None
+    # Availability inherited from PetkitFountainEntity: keyed on
+    # last_seen freshness across the whole device. Individual sensors
+    # whose field hasn't been populated yet just render as "unknown"
+    # (state=None) until the next poll/push fills them in — that's
+    # the right HA semantic for "we're talking to the device but this
+    # value hasn't arrived yet."

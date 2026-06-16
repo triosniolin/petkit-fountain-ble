@@ -7,10 +7,26 @@ import voluptuous as vol
 
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
+from homeassistant.core import callback
 
-from .const import CONF_TYPE_CODE, DOMAIN, NAME_PREFIX
+from .const import (
+    CONF_CONNECTION_MODE,
+    CONF_POLL_INTERVAL_MINUTES,
+    CONF_TYPE_CODE,
+    CONNECTION_MODE_ON_DEMAND,
+    CONNECTION_MODE_PERSISTENT,
+    DEFAULT_CONNECTION_MODE,
+    DEFAULT_POLL_INTERVAL_MINUTES,
+    DOMAIN,
+    NAME_PREFIX,
+)
 from .protocol import extract_type_code
 
 
@@ -18,6 +34,11 @@ class PetkitFountainConfigFlow(ConfigFlow, domain=DOMAIN):
     """Discovery + manual flow for the PetKit Fountain."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return PetkitFountainOptionsFlow()
 
     def __init__(self) -> None:
         self._discovered_service_info: BluetoothServiceInfoBleak | None = None
@@ -94,3 +115,34 @@ class PetkitFountainConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema({vol.Required(CONF_ADDRESS): vol.In(labels)}),
         )
+
+
+class PetkitFountainOptionsFlow(OptionsFlow):
+    """Lets users trade BLE slot residency for update freshness without
+    re-running discovery. Two knobs: connection mode (persistent vs
+    on-demand) and the periodic-poll interval. Saving changes triggers a
+    config-entry reload via the update-listener registered in __init__."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current_mode = self.config_entry.options.get(
+            CONF_CONNECTION_MODE, DEFAULT_CONNECTION_MODE
+        )
+        current_interval = self.config_entry.options.get(
+            CONF_POLL_INTERVAL_MINUTES, DEFAULT_POLL_INTERVAL_MINUTES
+        )
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_CONNECTION_MODE, default=current_mode): vol.In(
+                    [CONNECTION_MODE_PERSISTENT, CONNECTION_MODE_ON_DEMAND]
+                ),
+                vol.Required(
+                    CONF_POLL_INTERVAL_MINUTES, default=current_interval
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

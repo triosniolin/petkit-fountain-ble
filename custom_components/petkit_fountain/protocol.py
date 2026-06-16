@@ -200,8 +200,41 @@ def parse_device_identifiers(data: bytes) -> dict[str, Any]:
     }
 
 
-def parse_device_state(data: bytes) -> dict[str, Any]:
-    """CMD 210 response (W4X) — 12-byte minimum frame."""
+def parse_device_state(data: bytes, alias: str = "W4X") -> dict[str, Any]:
+    """CMD 210 response — frame layout differs by alias.
+
+    W4X / W5* / CTW2 share the slespersen "else" branch: 12-byte frame with
+    power/mode/warnings/pump_runtime/filter/running_status. CTW3 is a 26+
+    byte frame with extra fields (electric_status, low_battery,
+    pump_runtime_today, detect_status, supply/battery voltages in mV,
+    battery_percentage, module_status). Untested for non-W4X — see README's
+    verified-models table.
+    """
+    if alias == "CTW3":
+        if len(data) < 26:
+            return {}
+        return {
+            "power_status": data[0],                      # 0=off, 1=on
+            "suspend_status": data[1],
+            "mode": data[2],                              # 1=normal, 2=smart
+            "electric_status": data[3],
+            "dnd_state": data[4],
+            "warning_breakdown": data[5],
+            "warning_water_missing": data[6],
+            "low_battery": data[7],
+            "warning_filter": data[8],
+            "pump_runtime": bytes_to_int(data[9:13]),     # seconds, lifetime
+            "filter_percentage": byte_to_int(data[13]),   # 0-100
+            "running_status": byte_to_int(data[14]),
+            "pump_runtime_today": bytes_to_int(data[15:19]),
+            "detect_status": data[19],                    # cat presence
+            # Voltages on the wire are mV per slespersen; expose in volts.
+            "supply_voltage": bytes_to_short(data[20:22]) / 1000.0,
+            "battery_voltage": bytes_to_short(data[22:24]) / 1000.0,
+            "battery_percentage": byte_to_int(data[24]),
+            "module_status": data[25],
+        }
+    # W4X family (and unverified W5*/CTW2 — same 12-byte layout per slespersen).
     if len(data) < 12:
         return {}
     return {
@@ -217,8 +250,28 @@ def parse_device_state(data: bytes) -> dict[str, Any]:
     }
 
 
-def parse_device_configuration(data: bytes) -> dict[str, Any]:
-    """CMD 211 response (W4X) — 14-byte minimum frame."""
+def parse_device_configuration(data: bytes, alias: str = "W4X") -> dict[str, Any]:
+    """CMD 211 response — frame layout differs by alias.
+
+    W4X / W5* / CTW2 share the 14-byte "else" branch: schedules, LED config,
+    DND config, is_locked. CTW3 is a 10-byte frame with different fields —
+    notably battery_working_time / battery_sleep_time instead of LED+DND
+    schedules. Untested for non-W4X.
+    """
+    if alias == "CTW3":
+        if len(data) < 9:
+            return {}
+        return {
+            "smart_time_on": data[0],                       # minutes (1-60)
+            "smart_time_off": data[1],                      # minutes (1-60)
+            "battery_working_time": bytes_to_short(data[2:4]),  # minutes
+            "battery_sleep_time": bytes_to_short(data[4:6]),    # minutes
+            "led_switch": data[6],
+            "led_brightness": data[7],
+            "do_not_disturb_switch": data[8],
+            "is_locked": data[9] if len(data) > 9 else None,
+        }
+    # W4X family (and unverified W5*/CTW2 — same 14-byte layout per slespersen).
     if len(data) < 14:
         return {}
     return {
@@ -238,18 +291,26 @@ def parse_device_configuration(data: bytes) -> dict[str, Any]:
 # ────────────────────────── derived calculations ─────────────────────────────
 
 
-def parse_combined_status(data: bytes) -> dict[str, Any]:
-    """CMD 230 (0xE6) unsolicited broadcast — first 16 bytes are the state
-    block (cmd-210 layout extended with 4 trailing bytes whose meaning is
-    not yet decoded), next 14 bytes are the config block (cmd-211 layout).
+def parse_combined_status(data: bytes, alias: str = "W4X") -> dict[str, Any]:
+    """CMD 230 (0xE6) unsolicited broadcast.
+
+    W4X family: 16 bytes state + 14 bytes config (30 total observed).
+    CTW3: 26 bytes state + 10 bytes config (36 total per slespersen layouts).
 
     The fountain emits these frames unsolicited in bursts — observed pattern
-    is ~4 frames at ~3-second intra-burst spacing, with the next burst about
-    one minute later. Subscribing to them gives roughly per-minute updates
-    without active polling. Returns the merged field dict; callers should
-    pour it directly into the coordinator's PetkitFountainData.
+    on the W4XUVC is ~4 frames at ~3-second intra-burst spacing, with the
+    next burst about one minute later. CTW3 cadence is untested.
+
+    Returns the merged field dict; callers pour it into PetkitFountainData.
     """
     out: dict[str, Any] = {}
+    if alias == "CTW3":
+        if len(data) >= 26:
+            out.update(parse_device_state(data[:26], alias="CTW3"))
+        if len(data) >= 36:
+            out.update(parse_device_configuration(data[26:36], alias="CTW3"))
+        return out
+    # W4X family.
     if len(data) >= 12:
         out.update(parse_device_state(data[:16] if len(data) >= 16 else data))
     if len(data) >= 30:
@@ -257,14 +318,25 @@ def parse_combined_status(data: bytes) -> dict[str, Any]:
     return out
 
 
-def calculate_water_purified_l(alias: str, pump_runtime_seconds: int) -> float:
-    """Liters purified, per slespersen calculate_water_purified, W4X branch.
+# Per-alias multipliers for the water-purified calculation. Constants match
+# slespersen utils.calculate_water_purified.
+_WATER_MULTIPLIERS: dict[str, tuple[float, float]] = {
+    "W5C": (1.0, 1.3),
+    "W4X": (1.8, 1.5),
+    "CTW3": (3.0, 1.5),
+}
+_WATER_MULTIPLIERS_DEFAULT = (2.0, 1.5)
 
-    Formula: (1.5 * pump_runtime_seconds / 60.0) / 1.8
+
+def calculate_water_purified_l(alias: str, pump_runtime_seconds: int) -> float:
+    """Liters purified, per slespersen calculate_water_purified.
+
+    Formula: (f3 * pump_runtime_seconds / 60.0) / f2, where (f2, f3) are
+    alias-specific constants. Defaults to slespersen's generic (2.0, 1.5)
+    for aliases not explicitly mapped (W5, W5N, CTW2).
     """
-    if alias != "W4X":
-        return 0.0
-    return (1.5 * pump_runtime_seconds / 60.0) / 1.8
+    f2, f3 = _WATER_MULTIPLIERS.get(alias, _WATER_MULTIPLIERS_DEFAULT)
+    return (f3 * pump_runtime_seconds / 60.0) / f2
 
 
 # NOTE: slespersen's calculate_energy_usage (Wh-vs-kWh ambiguity in the
@@ -367,6 +439,56 @@ def build_config_payload(config: dict[str, int]) -> list[int]:
         dnd_off_hi, dnd_off_lo,
         config.get("is_locked", 0) & 0xFF,
     ]
+
+
+# Sentinel alias for devices we couldn't identify. Read parsers fall through
+# to W4X behavior for any non-CTW3 alias (UNKNOWN included), so reads are
+# still safe. The asymmetry matters at the *entity* layer: write platforms
+# in switch/select/number/button gate on `coordinator.alias == "W4X"` and
+# therefore correctly skip registration when the device is UNKNOWN.
+ALIAS_UNKNOWN = "UNKNOWN"
+
+
+def resolve_alias(
+    ble_local_name: str | None, pinned_name: str | None, type_code: int | None
+) -> str:
+    """Pick the protocol-parser branch identifier. W4X covers Eversweet 3 Pro
+    variants; CTW3 covers Eversweet Max. Other aliases (W5/W5C/W5N/CTW2) share
+    the W4X read-path frame layout per slespersen's "else" branch.
+
+    Returns ALIAS_UNKNOWN when neither type_code nor a name substring matches
+    a known SKU. Callers should NOT default UNKNOWN to W4X for write
+    decisions — a write to an unknown SKU could land on the wrong byte
+    positions. Reading is safe (parsers tolerate the W4X default).
+    """
+    if type_code is not None and type_code in MODEL_MAP:
+        return MODEL_MAP[type_code]["alias"]
+    combined = f"{ble_local_name or ''} {pinned_name or ''}".upper()
+    for alias in ("CTW3", "CTW2", "W4X", "W5N", "W5C", "W5"):
+        if alias in combined:
+            return alias
+    return ALIAS_UNKNOWN
+
+
+def resolve_model(
+    ble_local_name: str | None, pinned_name: str | None, type_code: int | None
+) -> str:
+    """Derive the human-readable model name. Three-step resolution, most
+    authoritative first: type-code → MODEL_MAP (verified by the device
+    itself); then string match on either name source; then a generic
+    fallback. The string-match branch only knows about W4X-family markers
+    since that's all we can label confidently."""
+    # 1. Authoritative: type-code lookup.
+    if type_code is not None and type_code in MODEL_MAP:
+        return MODEL_MAP[type_code]["product_name"]
+    # 2. String-match defense in depth.
+    combined = f"{ble_local_name or ''} {pinned_name or ''}".upper()
+    if "UVC" in combined:
+        return "Eversweet 3 Pro UVC"
+    if "W4X" in combined:
+        return "Eversweet 3 Pro"
+    # 3. Generic fallback — we don't know which SKU it is.
+    return "PetKit Fountain"
 
 
 def compute_secret(device_id_bytes: list[int]) -> list[int]:

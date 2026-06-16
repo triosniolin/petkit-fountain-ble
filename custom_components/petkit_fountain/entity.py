@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import PetkitFountainCoordinator, signal_update
@@ -49,4 +50,13 @@ class PetkitFountainEntity(Entity):
 
     @property
     def available(self) -> bool:
-        return self.coordinator.data.rssi is not None
+        """Available iff we've heard from the device recently. `last_seen`
+        is stamped on every advertisement, push frame, and successful poll
+        — if nothing has updated it within the coordinator's `stale_after`
+        window (2.5× the configured poll interval), the fountain is
+        considered offline and entities go unavailable instead of showing
+        stale values as live."""
+        last_seen = self.coordinator.data.last_seen
+        if last_seen is None:
+            return False
+        return (dt_util.utcnow() - last_seen) < self.coordinator.stale_after

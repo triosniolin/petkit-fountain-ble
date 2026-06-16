@@ -66,6 +66,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: PetkitFountainCoordinator = hass.data[DOMAIN][entry.entry_id]
+    # Write entities only registered for the verified W4X parser branch.
+    # Non-W4X aliases share the read-path "else" branch per slespersen,
+    # but CMD 220/221 control-payload byte positions are unverified for
+    # those families — sending those commands could write the wrong fields.
+    if coordinator.alias != "W4X":
+        return
     async_add_entities(
         PetkitFountainSwitch(coordinator, description) for description in SWITCHES
     )
@@ -87,9 +93,7 @@ class PetkitFountainSwitch(PetkitFountainEntity, SwitchEntity):
     def is_on(self) -> bool | None:
         return self.entity_description.value_fn(self.coordinator.data)
 
-    @property
-    def available(self) -> bool:
-        return self.is_on is not None
+    # Availability inherited from PetkitFountainEntity (last_seen freshness).
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.entity_description.turn_on_fn(self.coordinator)

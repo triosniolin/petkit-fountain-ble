@@ -25,6 +25,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: PetkitFountainCoordinator = hass.data[DOMAIN][entry.entry_id]
+    if coordinator.alias != "W4X":
+        return  # write entities verified on W4X only — see switch.py for rationale
     async_add_entities([PetkitFountainResetFilterButton(coordinator)])
 
 
@@ -34,11 +36,9 @@ class PetkitFountainResetFilterButton(PetkitFountainEntity, ButtonEntity):
         self.entity_description = RESET_FILTER
         self._attr_unique_id = f"{coordinator.address}_reset_filter"
 
-    @property
-    def available(self) -> bool:
-        # Button is always usable once the coordinator has any data
-        # established; no per-value freshness gate.
-        return True
+    # Availability inherited from PetkitFountainEntity (last_seen freshness).
+    # Pressing a "reset filter" button on an offline device wouldn't do
+    # anything anyway, so the freshness gate is the right semantic.
 
     async def async_press(self) -> None:
         await self.coordinator.async_reset_filter()

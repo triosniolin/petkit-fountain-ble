@@ -60,6 +60,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: PetkitFountainCoordinator = hass.data[DOMAIN][entry.entry_id]
+    if coordinator.alias != "W4X":
+        return  # write entities verified on W4X only — see switch.py for rationale
     async_add_entities(
         PetkitFountainSelect(coordinator, description) for description in SELECTS
     )
@@ -81,9 +83,7 @@ class PetkitFountainSelect(PetkitFountainEntity, SelectEntity):
     def current_option(self) -> str | None:
         return self.entity_description.value_fn(self.coordinator.data)
 
-    @property
-    def available(self) -> bool:
-        return self.current_option is not None
+    # Availability inherited from PetkitFountainEntity (last_seen freshness).
 
     async def async_select_option(self, option: str) -> None:
         await self.entity_description.select_fn(self.coordinator, option)

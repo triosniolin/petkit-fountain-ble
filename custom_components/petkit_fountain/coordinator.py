@@ -13,7 +13,7 @@ dispatcher signal_update(entry_id).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 
@@ -23,23 +23,37 @@ from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.util import dt as dt_util
 
 from .connection import PetkitFountainConnection
-from .const import DOMAIN
-from .protocol import MODEL_MAP
+from .const import (
+    CONNECTION_MODE_ON_DEMAND,
+    CONNECTION_MODE_PERSISTENT,
+    DEFAULT_CONNECTION_MODE,
+    DEFAULT_POLL_INTERVAL_MINUTES,
+    DOMAIN,
+)
+from .protocol import resolve_alias, resolve_model
 
 _LOGGER = logging.getLogger(__name__)
 
-# Poll cadence. The fountain pushes a complete state+config frame (CMD 230)
-# in bursts (observed: ~4 frames at ~3s intra-burst spacing, ~once per minute
-# overall), so most "fresh data" arrives via the unsolicited path (see
-# PetkitFountainConnection._on_unsolicited_status). The active poll only
-# reads fields the push doesn't carry — supply voltage (CMD 66), firmware
-# (CMD 200) — and acts as a watchdog that detects connection drops the
-# disconnect callback might miss. 5 minutes is generous for both.
-POLL_INTERVAL = timedelta(minutes=5)
+# When a poll fails (typically a transient BLE race after a reload),
+# schedule a follow-up attempt this many seconds later instead of waiting
+# for the next periodic interval. ~10s is long enough for bluez to settle
+# after a failed connect, short enough that the entity-unavailable window
+# stays in "blink" territory rather than "wait for next poll cycle".
+_FAIL_RETRY_SECONDS = 10
+
+# Poll cadence is configurable via the options flow (CONF_POLL_INTERVAL_MINUTES,
+# default 5 minutes). In persistent connection mode the poll is a backstop —
+# the fountain's CMD 230 push frames (observed: ~4 frames at ~3s intra-burst
+# spacing, ~once/min overall) carry most fresh data. In on-demand mode the
+# connection is closed between polls, so push frames are functionally inert
+# and the poll IS the data path; users on on-demand probably want a lower
+# interval.
 
 
 @dataclass
@@ -50,6 +64,10 @@ class PetkitFountainData:
 
     # Bluetooth-level
     rssi: int | None = None
+    # Stamped on each advertisement, push frame, and successful poll. Drives
+    # entity availability — if we haven't heard from the device in a while,
+    # everything goes unavailable rather than showing stale values as live.
+    last_seen: datetime | None = None
 
     # Device identity
     device_id: int | None = None
@@ -82,7 +100,7 @@ class PetkitFountainData:
     battery_voltage: float | None = None
     battery_percentage: int | None = None
 
-    # Configuration (CMD 211)
+    # Configuration (CMD 211 — W4X family layout)
     smart_time_on: int | None = None        # minutes
     smart_time_off: int | None = None
     led_switch: int | None = None
@@ -93,6 +111,22 @@ class PetkitFountainData:
     do_not_disturb_time_on: int | None = None
     do_not_disturb_time_off: int | None = None
     is_locked: int | None = None
+
+    # CTW3-only state fields (Eversweet Max family — untested).
+    # CTW3's state frame is 26 bytes vs W4X's 12 and carries hardware that
+    # W4X doesn't have (a real battery, supply/battery voltage telemetry,
+    # cat-presence detect, electric-status discrimination).
+    suspend_status: int | None = None
+    electric_status: int | None = None
+    low_battery: int | None = None
+    pump_runtime_today: int | None = None   # seconds, since midnight
+    detect_status: int | None = None        # cat presence sensor
+    module_status: int | None = None
+
+    # CTW3-only configuration fields. CTW3 swaps the LED+DND schedule slots
+    # for battery-management timings.
+    battery_working_time: int | None = None  # minutes (battery uptime budget)
+    battery_sleep_time: int | None = None    # minutes (battery sleep budget)
 
     def update_from_poll(self, poll_result: dict[str, Any]) -> None:
         """Merge fields returned by PetkitFountainConnection.poll() into self."""
@@ -105,6 +139,24 @@ def signal_update(entry_id: str) -> str:
     return f"{DOMAIN}_update_{entry_id}"
 
 
+# Fields that compose the CMD 221 set-config payload. All must be present
+# (non-None) before we're willing to write — otherwise unpatched fields
+# would silently collapse to 0 in the wire payload and overwrite real
+# device state.
+_CONFIG_BLOCK_FIELDS: tuple[str, ...] = (
+    "smart_time_on",
+    "smart_time_off",
+    "led_switch",
+    "led_brightness",
+    "led_light_time_on",
+    "led_light_time_off",
+    "do_not_disturb_switch",
+    "do_not_disturb_time_on",
+    "do_not_disturb_time_off",
+    "is_locked",
+)
+
+
 class PetkitFountainCoordinator:
     """Owns the connection + data; drives the poll loop."""
 
@@ -115,47 +167,41 @@ class PetkitFountainCoordinator:
         ble_device: BLEDevice,
         name: str,
         type_code: int | None,
+        connection_mode: str = DEFAULT_CONNECTION_MODE,
+        poll_interval_minutes: int = DEFAULT_POLL_INTERVAL_MINUTES,
     ) -> None:
         self.hass = hass
         self.entry = entry
         self.address: str = ble_device.address
         self.name: str = name
-        # Friendly model — three-step resolution, most authoritative first:
-        #   1. Pinned type_code from MODEL_MAP (captured at discovery from the
-        #      service-data byte the device itself advertises; doesn't drift).
-        #   2. String match on the BLE local_name AND the pinned config-entry
-        #      name combined — covers the case where the discovery capture
-        #      missed type_code but at least one name source has the SKU
-        #      marker (e.g. "Petkit_W4XUVC").
-        #   3. Default to non-UVC. UVC is the upcharge feature; better to
-        #      under-promise than mislabel a non-UVC unit as UVC.
-        self.model = self._resolve_model(ble_device.name, name, type_code)
-        self.data = PetkitFountainData()
+        self.connection_mode = connection_mode
+        self.poll_interval = timedelta(minutes=poll_interval_minutes)
+        # Entity availability gate. If we haven't seen the device (adv,
+        # push frame, or successful poll) within this window, entities go
+        # unavailable. 2.5× poll_interval tolerates one missed cycle of
+        # whatever the user configured, generous enough to avoid flapping
+        # but tight enough that a powered-off / out-of-range fountain
+        # actually surfaces as offline rather than showing stale values
+        # forever.
+        self.stale_after = timedelta(seconds=poll_interval_minutes * 60 * 2.5)
+        # Resolve alias + friendly model in one go. The alias drives parser
+        # branch selection (W4X / CTW3 frames are decoded differently); the
+        # model is the human-readable label on the device card. An
+        # unresolved alias becomes "UNKNOWN" — read parsers treat that as
+        # the W4X default, but write entities never register for it.
+        self.alias = resolve_alias(ble_device.name, name, type_code)
+        self.model = resolve_model(ble_device.name, name, type_code)
+        self.data = PetkitFountainData(alias=self.alias)
 
         self._connection = PetkitFountainConnection(
-            ble_device, self.name, on_unsolicited_status=self._on_push_update
+            ble_device,
+            self.name,
+            alias=self.alias,
+            on_unsolicited_status=self._on_push_update,
         )
         self._unsub_adv: CALLBACK_TYPE | None = None
         self._unsub_poll: CALLBACK_TYPE | None = None
         self._poll_in_progress = False
-
-    @staticmethod
-    def _resolve_model(
-        ble_local_name: str | None, pinned_name: str | None, type_code: int | None
-    ) -> str:
-        """Derive the human-readable model name. See docstring on the
-        `model` field in __init__ for the resolution order rationale."""
-        # 1. Authoritative: type-code lookup.
-        if type_code is not None and type_code in MODEL_MAP:
-            return MODEL_MAP[type_code]["product_name"]
-        # 2. String-match defense in depth on whatever name sources we have.
-        combined = f"{ble_local_name or ''} {pinned_name or ''}".upper()
-        if "UVC" in combined:
-            return "Eversweet 3 Pro UVC"
-        if "W4X" in combined:
-            return "Eversweet 3 Pro"
-        # 3. Conservative default.
-        return "Eversweet 3 Pro"
 
     # ─────────────────────── passive advertisement path ──────────────────────
 
@@ -166,6 +212,7 @@ class PetkitFountainCoordinator:
         _change: bluetooth.BluetoothChange,
     ) -> None:
         self.data.rssi = service_info.rssi
+        self.data.last_seen = dt_util.utcnow()
         async_dispatcher_send(self.hass, signal_update(self.entry.entry_id))
 
     # ─────────────────────── unsolicited push updates ────────────────────────
@@ -176,6 +223,7 @@ class PetkitFountainCoordinator:
         burst per minute (4 frames at ~3s intra-burst spacing). Updates the
         data block and notifies entities without waiting for the next poll."""
         self.data.update_from_poll(parsed)
+        self.data.last_seen = dt_util.utcnow()
         async_dispatcher_send(self.hass, signal_update(self.entry.entry_id))
 
     # ──────────────────────────────── controls ──────────────────────────────
@@ -186,21 +234,21 @@ class PetkitFountainCoordinator:
     # cached state + apply the patch. After the write succeeds, we schedule
     # a poll to refresh entities — UI lag should be ≤2s.
 
-    def _current_config(self) -> dict[str, int]:
-        """Snapshot the config-block fields from the most recent poll."""
+    def _current_config(self) -> dict[str, int] | None:
+        """Snapshot the config-block fields from the most recent poll.
+
+        Returns None if any field is still None (i.e. no successful config
+        read since startup). Callers must NOT synthesize zeros for missing
+        fields — the fountain only accepts the full 14-byte block per CMD
+        221 write, so a partial snapshot with `or 0` fallbacks would clobber
+        real device state with zeros on the unpatched fields (e.g. flipping
+        the LED switch could simultaneously rewrite DND schedule times to
+        00:00 if those hadn't been read yet).
+        """
         d = self.data
-        return {
-            "smart_time_on": d.smart_time_on or 0,
-            "smart_time_off": d.smart_time_off or 0,
-            "led_switch": d.led_switch or 0,
-            "led_brightness": d.led_brightness or 0,
-            "led_light_time_on": d.led_light_time_on or 0,
-            "led_light_time_off": d.led_light_time_off or 0,
-            "do_not_disturb_switch": d.do_not_disturb_switch or 0,
-            "do_not_disturb_time_on": d.do_not_disturb_time_on or 0,
-            "do_not_disturb_time_off": d.do_not_disturb_time_off or 0,
-            "is_locked": d.is_locked or 0,
-        }
+        if any(getattr(d, field) is None for field in _CONFIG_BLOCK_FIELDS):
+            return None
+        return {field: getattr(d, field) for field in _CONFIG_BLOCK_FIELDS}
 
     async def _trigger_refresh(self) -> None:
         """Kick a fresh poll so entities reflect the new state quickly."""
@@ -226,8 +274,19 @@ class PetkitFountainCoordinator:
         await self._trigger_refresh()
 
     async def async_patch_config(self, **patches: int) -> None:
-        """Apply a partial config patch and send the full CMD 221 payload."""
+        """Apply a partial config patch and send the full CMD 221 payload.
+
+        Refuses to write if the cached config block is incomplete — the
+        device only accepts whole-block writes, so a partial snapshot would
+        corrupt unread fields. Caller should retry after the next poll.
+        """
         config = self._current_config()
+        if config is None:
+            raise HomeAssistantError(
+                "PetKit Fountain config block hasn't been read from the device "
+                "yet — cannot safely write a partial update. Wait for the next "
+                "poll to populate the cache, then retry."
+            )
         config.update(patches)
         await self._connection.set_config(config)
         # Optimistic update: write the patched fields back into self.data so
@@ -245,7 +304,9 @@ class PetkitFountainCoordinator:
     # ─────────────────────────── active poll path ────────────────────────────
 
     async def _async_poll(self, _now=None) -> None:
-        """Run one poll cycle. Suppress overlapping invocations."""
+        """Run one poll cycle. Suppress overlapping invocations. In on-demand
+        connection mode, disconnect after each successful poll so the BLE
+        adapter slot is freed between cycles."""
         if self._poll_in_progress:
             _LOGGER.debug("Skipping poll — previous still in flight")
             return
@@ -253,17 +314,34 @@ class PetkitFountainCoordinator:
         try:
             result = await self._connection.poll()
             self.data.update_from_poll(result)
+            self.data.last_seen = dt_util.utcnow()
             async_dispatcher_send(self.hass, signal_update(self.entry.entry_id))
+            if self.connection_mode == CONNECTION_MODE_ON_DEMAND:
+                # Free the BLE slot between polls. Push frames are
+                # functionally inert in this mode anyway.
+                try:
+                    await self._connection.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as err:  # noqa: BLE001 — coordinator must never crash
             _LOGGER.warning(
                 "Poll failed (%s): %s", type(err).__name__, err, exc_info=True
             )
-            # Drop the (possibly half-open) connection so the next poll
+            # Drop the (possibly half-open) connection so the retry
             # re-establishes cleanly.
             try:
                 await self._connection.disconnect()
             except Exception:  # noqa: BLE001
                 pass
+            # Schedule a near-term retry instead of waiting for the next
+            # periodic interval. Matters most after an options-flow reload
+            # in on-demand mode: the first poll can race the old
+            # connection's teardown and fail, and without this retry the
+            # user would see entities `unavailable` for the entire
+            # configured poll interval. _FAIL_RETRY_SECONDS is short enough
+            # to recover before the user notices but long enough to let
+            # bluez settle.
+            async_call_later(self.hass, _FAIL_RETRY_SECONDS, self._async_poll)
         finally:
             self._poll_in_progress = False
 
@@ -291,20 +369,28 @@ class PetkitFountainCoordinator:
             self._async_poll(), name=f"{DOMAIN}_initial_poll"
         )
         self._unsub_poll = async_track_time_interval(
-            self.hass, self._async_poll, POLL_INTERVAL
+            self.hass, self._async_poll, self.poll_interval
         )
 
-        def _stop() -> None:
+        async def _stop() -> None:
             if self._unsub_adv is not None:
                 self._unsub_adv()
                 self._unsub_adv = None
             if self._unsub_poll is not None:
                 self._unsub_poll()
                 self._unsub_poll = None
-            # Best-effort connection close. Coordinator stop is async-context
-            # so we schedule the disconnect rather than awaiting it here.
-            self.hass.async_create_background_task(
-                self._connection.disconnect(), name=f"{DOMAIN}_disconnect"
-            )
+            # Await the disconnect so the old GATT session is fully torn
+            # down before HA's reload pipeline moves on to setup_entry.
+            # If we fire-and-forget here (as an earlier draft did), the
+            # new coordinator's first connect races the in-progress
+            # disconnect and bleak raises BleakDBusError [NotConnected]
+            # from start_notify, causing the initial poll to fail and the
+            # entities to stay unavailable until the NEXT scheduled poll —
+            # exactly the user-visible "unavailable for the full poll
+            # interval after options change" bug.
+            try:
+                await self._connection.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
 
         return _stop

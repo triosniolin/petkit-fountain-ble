@@ -4,9 +4,21 @@ A Home Assistant custom integration that controls a **PetKit Eversweet 3 Pro / 3
 
 ## Status
 
-Tested on **Eversweet 3 Pro UVC** (BLE local_name `Petkit_W4XUVC`, internal alias `W4X`). The W4X protocol code path also covers the non-UVC Eversweet 3 Pro (`Petkit_W4X`); both should work, only the UVC variant has been verified.
+| Model | BLE local_name | Parser branch | Status |
+|---|---|---|---|
+| Eversweet 3 Pro UVC | `Petkit_W4XUVC` | W4X | ✅ Verified — sensors + write controls |
+| Eversweet 3 Pro | `Petkit_W4X` | W4X | 🟡 Shares verified branch; unverified end-to-end |
+| Eversweet Mini | `Petkit_W5`, `Petkit_W5C`, `Petkit_W5N` | W4X (read-only) | 🟠 **Untested** — discovery + read-path likely work, write entities disabled |
+| Eversweet Solo 2 | `Petkit_CTW2` | W4X (read-only) | 🟠 **Untested** — discovery + read-path likely work, write entities disabled |
+| Eversweet Max | `Petkit_CTW3` | CTW3 (read-only) | 🟠 **Untested** — distinct parser branch, write entities disabled |
 
-Other PetKit fountain families (W5 / CTW2 / CTW3) are **not** supported — only their model codes are recognized in the model map. Add a new parser branch if you want to extend support.
+**Verified** means I personally own the unit, the integration has been running on it for a meaningful period, and write commands (mode change, DND toggle, etc.) actually do what they say. Other rows are based on protocol research from upstream slespersen/Jezza34000 work but have **never been run against real hardware** by this maintainer.
+
+If you own one of the untested models and want to help, install, file an issue with the model + a brief description of what works, and the verified/untested table moves forward.
+
+### Why write entities are disabled for non-W4X
+
+Read parsers for the other PetKit fountain families share the W4X byte layout (slespersen's "else" branch) or have an explicit CTW3 branch — those are mechanical to port and likely correct. **Write commands** (CMD 220 / CMD 221 / CMD 222), however, expect payloads with byte positions that have been verified on W4X but may differ on CTW3 or older W5 firmwares. Sending a wrong-position payload could change unintended settings or destabilize the device. To keep the experimental support safe, switches/selects/numbers/buttons are simply not registered for non-W4X devices.
 
 ## Features
 
@@ -42,12 +54,23 @@ The integration sends `CMD 73 (init_device)` on first connect, which sets a devi
 
 ## Configuration
 
-No YAML required. Once installed, HA's Bluetooth integration auto-discovers the fountain (it advertises as `Petkit_W4XUVC` or `Petkit_W4X`); confirm in the discovery prompt.
+No YAML required. Once installed, HA's Bluetooth integration auto-discovers the fountain (it advertises as `Petkit_W4XUVC`, `Petkit_W4X`, `Petkit_CTW3`, etc.); confirm in the discovery prompt.
+
+### Options
+
+After install, **Settings → Devices & Services → PetKit Fountain → Configure** exposes:
+
+- **Connection mode**
+  - *Persistent* (default): one BLE adapter slot is held continuously. Real-time push frames (~1 burst/min) deliver state changes near-instantly, and control commands fire in <1s.
+  - *On-demand*: BLE slot is freed between polls. Updates only arrive at the poll interval, and control commands incur ~2–3s of reconnect overhead. Use this when other connect-based BLE devices are competing for adapter slots.
+- **Poll interval** (1–60 minutes, default 5): how often the integration reads the full state set. In persistent mode this is a backstop; in on-demand mode it's the only data path — lower it (60–120s) when switching modes.
+
+Saving the form triggers a clean integration reload — expect entities to show `unavailable` for ~5–15 seconds while the new connection is established.
 
 ## Requirements
 
 - A Home Assistant instance with the Bluetooth integration set up and a working BT adapter (or an ESPHome BT proxy with range to the fountain)
-- Home Assistant 2024.1 or newer
+- Home Assistant **2024.11 or newer** (the options flow uses the no-arg `OptionsFlow` pattern introduced in 2024.11; older versions raise `AttributeError` when opening the Configure dialog)
 
 ## Acknowledgements
 

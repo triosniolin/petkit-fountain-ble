@@ -17,12 +17,25 @@
       "already_configured": "This fountain is already configured."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "description": "Connection mode trades BLE adapter slot residency for update freshness. Persistent (default): one slot held continuously; the fountain's push channel delivers real-time state changes. On-demand: slot is freed between polls; updates only arrive at the poll interval. Lower the poll interval if you switch to on-demand.",
+        "data": {
+          "connection_mode": "Connection mode",
+          "poll_interval_minutes": "Poll interval (minutes)"
+        }
+      }
+    }
+  },
   "entity": {
     "binary_sensor": {
       "power_status": {"name": "Power"},
       "warning_breakdown": {"name": "Hardware fault"},
       "warning_water_missing": {"name": "Low water"},
-      "warning_filter": {"name": "Filter due"}
+      "warning_filter": {"name": "Filter due"},
+      "low_battery": {"name": "Low battery"},
+      "detect_status": {"name": "Cat detected"}
     },
     "button": {
       "reset_filter": {"name": "Reset filter"}
@@ -51,6 +64,9 @@
     "sensor": {
       "rssi": {"name": "Signal strength"},
       "supply_voltage": {"name": "Supply voltage"},
+      "battery_voltage": {"name": "Battery voltage"},
+      "battery_percentage": {"name": "Battery"},
+      "pump_runtime_today": {"name": "Pump runtime today"},
       "firmware": {"name": "Firmware"},
       "serial": {"name": "Serial"},
       "filter_percentage": {"name": "Filter life"},
